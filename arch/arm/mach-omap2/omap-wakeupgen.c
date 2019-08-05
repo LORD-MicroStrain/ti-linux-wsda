@@ -50,6 +50,9 @@
 #define OMAP4_NR_BANKS		4
 #define OMAP4_NR_IRQS		128
 
+#define SYS_NIRQ1_EXT_SYS_IRQ_1	7
+#define SYS_NIRQ2_EXT_SYS_IRQ_2	119
+
 static void __iomem *wakeupgen_base;
 static void __iomem *sar_base;
 static DEFINE_RAW_SPINLOCK(wakeupgen_lock);
@@ -151,6 +154,37 @@ static void wakeupgen_unmask(struct irq_data *d)
 	_wakeupgen_set(d->hwirq, irq_target_cpu[d->hwirq]);
 	raw_spin_unlock_irqrestore(&wakeupgen_lock, flags);
 	irq_chip_unmask_parent(d);
+}
+
+/*
+ * The sys_nirq pins bypass peripheral modules and are wired directly
+ * to MPUSS wakeupgen. They get automatically inverted for GIC.
+ */
+static int wakeupgen_irq_set_type(struct irq_data *d, unsigned int type)
+{
+	bool inverted = false;
+
+	switch (type) {
+	case IRQ_TYPE_LEVEL_LOW:
+		type &= ~IRQ_TYPE_LEVEL_MASK;
+		type |= IRQ_TYPE_LEVEL_HIGH;
+		inverted = true;
+		break;
+	case IRQ_TYPE_EDGE_FALLING:
+		type &= ~IRQ_TYPE_EDGE_BOTH;
+		type |= IRQ_TYPE_EDGE_RISING;
+		inverted = true;
+		break;
+	default:
+		break;
+	}
+
+	if (inverted && d->hwirq != SYS_NIRQ1_EXT_SYS_IRQ_1 &&
+	    d->hwirq != SYS_NIRQ2_EXT_SYS_IRQ_2)
+		pr_warn("wakeupgen: irq%li polarity inverted in dts\n",
+			d->hwirq);
+
+	return irq_chip_set_type_parent(d, type);
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
@@ -299,8 +333,6 @@ static void irq_save_context(void)
 	if (soc_is_dra7xx())
 		return;
 
-	if (!sar_base)
-		sar_base = omap4_get_sar_ram_base();
 	if (wakeupgen_ops && wakeupgen_ops->save_context)
 		wakeupgen_ops->save_context();
 }
@@ -448,7 +480,7 @@ static struct irq_chip wakeupgen_chip = {
 	.irq_mask		= wakeupgen_mask,
 	.irq_unmask		= wakeupgen_unmask,
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
-	.irq_set_type		= irq_chip_set_type_parent,
+	.irq_set_type		= wakeupgen_irq_set_type,
 	.flags			= IRQCHIP_SKIP_SET_WAKE | IRQCHIP_MASK_ON_SUSPEND,
 #ifdef CONFIG_SMP
 	.irq_set_affinity	= irq_chip_set_affinity_parent,
@@ -522,13 +554,13 @@ static int __init wakeupgen_init(struct device_node *node,
 	u32 val;
 
 	if (!parent) {
-		pr_err("%s: no parent, giving up\n", node->full_name);
+		pr_err("%pOF: no parent, giving up\n", node);
 		return -ENODEV;
 	}
 
 	parent_domain = irq_find_host(parent);
 	if (!parent_domain) {
-		pr_err("%s: unable to obtain parent domain\n", node->full_name);
+		pr_err("%pOF: unable to obtain parent domain\n", node);
 		return -ENXIO;
 	}
 	/* Not supported on OMAP4 ES1.0 silicon */
@@ -597,6 +629,8 @@ static int __init wakeupgen_init(struct device_node *node,
 
 	irq_hotplug_init();
 	irq_pm_init();
+
+	sar_base = omap4_get_sar_ram_base();
 
 	return 0;
 }

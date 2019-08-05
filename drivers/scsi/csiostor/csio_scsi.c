@@ -1713,8 +1713,11 @@ csio_scsi_err_handler(struct csio_hw *hw, struct csio_ioreq *req)
 	}
 
 out:
-	if (req->nsge > 0)
+	if (req->nsge > 0) {
 		scsi_dma_unmap(cmnd);
+		if (req->dcopy && (host_status == DID_OK))
+			host_status = csio_scsi_copy_to_sgl(hw, req);
+	}
 
 	cmnd->result = (((host_status) << 16) | scsi_status);
 	cmnd->scsi_done(cmnd);
@@ -2445,7 +2448,7 @@ csio_scsim_init(struct csio_scsim *scm, struct csio_hw *hw)
 
 		/* Allocate Dma buffers for Response Payload */
 		dma_buf = &ioreq->dma_buf;
-		dma_buf->vaddr = pci_pool_alloc(hw->scsi_pci_pool, GFP_KERNEL,
+		dma_buf->vaddr = dma_pool_alloc(hw->scsi_dma_pool, GFP_KERNEL,
 						&dma_buf->paddr);
 		if (!dma_buf->vaddr) {
 			csio_err(hw,
@@ -2485,7 +2488,7 @@ free_ioreq:
 		ioreq = (struct csio_ioreq *)tmp;
 
 		dma_buf = &ioreq->dma_buf;
-		pci_pool_free(hw->scsi_pci_pool, dma_buf->vaddr,
+		dma_pool_free(hw->scsi_dma_pool, dma_buf->vaddr,
 			      dma_buf->paddr);
 
 		kfree(ioreq);
@@ -2516,7 +2519,7 @@ csio_scsim_exit(struct csio_scsim *scm)
 		ioreq = (struct csio_ioreq *)tmp;
 
 		dma_buf = &ioreq->dma_buf;
-		pci_pool_free(scm->hw->scsi_pci_pool, dma_buf->vaddr,
+		dma_pool_free(scm->hw->scsi_dma_pool, dma_buf->vaddr,
 			      dma_buf->paddr);
 
 		kfree(ioreq);

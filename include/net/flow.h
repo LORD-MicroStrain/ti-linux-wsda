@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *
  *	Generic internet FLOW.
@@ -124,7 +125,7 @@ static inline void flowi4_update_output(struct flowi4 *fl4, int oif, __u8 tos,
 	fl4->daddr = daddr;
 	fl4->saddr = saddr;
 }
-				      
+
 
 struct flowi6 {
 	struct flowi_common	__fl_common;
@@ -149,6 +150,7 @@ struct flowi6 {
 #define fl6_ipsec_spi		uli.spi
 #define fl6_mh_type		uli.mht.type
 #define fl6_gre_key		uli.gre_key
+	__u32			mp_hash;
 } __attribute__((__aligned__(BITS_PER_LONG/8)));
 
 struct flowidn {
@@ -219,21 +221,5 @@ static inline unsigned int flow_key_size(u16 family)
 }
 
 __u32 __get_hash_from_flowi6(const struct flowi6 *fl6, struct flow_keys *keys);
-
-static inline __u32 get_hash_from_flowi6(const struct flowi6 *fl6)
-{
-	struct flow_keys keys;
-
-	return __get_hash_from_flowi6(fl6, &keys);
-}
-
-__u32 __get_hash_from_flowi4(const struct flowi4 *fl4, struct flow_keys *keys);
-
-static inline __u32 get_hash_from_flowi4(const struct flowi4 *fl4)
-{
-	struct flow_keys keys;
-
-	return __get_hash_from_flowi4(fl4, &keys);
-}
 
 #endif

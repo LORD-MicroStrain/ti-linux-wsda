@@ -63,7 +63,8 @@ static void fsl_dcu_drm_crtc_atomic_disable(struct drm_crtc *crtc,
 	clk_disable_unprepare(fsl_dev->pix_clk);
 }
 
-static void fsl_dcu_drm_crtc_enable(struct drm_crtc *crtc)
+static void fsl_dcu_drm_crtc_atomic_enable(struct drm_crtc *crtc,
+					   struct drm_crtc_state *old_state)
 {
 	struct drm_device *dev = crtc->dev;
 	struct fsl_dcu_drm_device *fsl_dev = dev->dev_private;
@@ -98,7 +99,7 @@ static void fsl_dcu_drm_crtc_mode_set_nofb(struct drm_crtc *crtc)
 	vsw = mode->vsync_end - mode->vsync_start;
 
 	/* INV_PXCK as default (most display sample data on rising edge) */
-	if (!(con->display_info.bus_flags & DRM_BUS_FLAG_PIXDATA_POSEDGE))
+	if (!(con->display_info.bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE))
 		pol |= DCU_SYN_POL_INV_PXCK;
 
 	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
@@ -133,7 +134,7 @@ static void fsl_dcu_drm_crtc_mode_set_nofb(struct drm_crtc *crtc)
 static const struct drm_crtc_helper_funcs fsl_dcu_drm_crtc_helper_funcs = {
 	.atomic_disable = fsl_dcu_drm_crtc_atomic_disable,
 	.atomic_flush = fsl_dcu_drm_crtc_atomic_flush,
-	.enable = fsl_dcu_drm_crtc_enable,
+	.atomic_enable = fsl_dcu_drm_crtc_atomic_enable,
 	.mode_set_nofb = fsl_dcu_drm_crtc_mode_set_nofb,
 };
 

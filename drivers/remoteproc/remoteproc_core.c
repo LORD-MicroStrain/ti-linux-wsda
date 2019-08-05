@@ -33,6 +33,7 @@
 #include <linux/firmware.h>
 #include <linux/string.h>
 #include <linux/debugfs.h>
+#include <linux/devcoredump.h>
 #include <linux/remoteproc.h>
 #include <linux/iommu.h>
 #include <linux/idr.h>
@@ -40,6 +41,9 @@
 #include <linux/crc32.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_ring.h>
+#include <linux/vmalloc.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <asm/byteorder.h>
 
 #include "remoteproc_internal.h"
@@ -50,7 +54,7 @@ static LIST_HEAD(rproc_list);
 typedef int (*rproc_handle_resources_t)(struct rproc *rproc,
 				struct resource_table *table, int len);
 typedef int (*rproc_handle_resource_t)(struct rproc *rproc,
-				 void *, int offset, int avail);
+				 void *, int offset, int avail, u16 ver);
 
 /* Unique indices for remoteproc devices */
 static DEFINE_IDA(rproc_dev_index);
@@ -144,6 +148,7 @@ static void rproc_disable_iommu(struct rproc *rproc)
  * @rproc: handle of a remote processor
  * @da: remoteproc device address to translate
  * @len: length of the memory region @da is pointing to
+ * @flags: flags to pass onto platform implementations for aiding translations
  *
  * Some remote processors will ask us to allocate them physically contiguous
  * memory regions (which we call "carveouts"), and map them to specific
@@ -159,7 +164,10 @@ static void rproc_disable_iommu(struct rproc *rproc)
  * carveouts and translate specific device addresses to kernel virtual addresses
  * so we can access the referenced memory. This function also allows to perform
  * translations on the internal remoteproc memory regions through a platform
- * implementation specific da_to_va ops, if present.
+ * implementation specific da_to_va ops, if present. The @flags field is passed
+ * onto these ops to aid the translation within the ops implementation. The
+ * @flags field is to be passed as a combination of the RPROC_FLAGS_xxx type
+ * and the pertinent flags value for that type.
  *
  * The function returns a valid kernel address on success or NULL on failure.
  *
@@ -168,13 +176,13 @@ static void rproc_disable_iommu(struct rproc *rproc)
  * here the output of the DMA API for the carveouts, which should be more
  * correct.
  */
-void *rproc_da_to_va(struct rproc *rproc, u64 da, int len)
+void *rproc_da_to_va(struct rproc *rproc, u64 da, int len, u32 flags)
 {
 	struct rproc_mem_entry *carveout;
 	void *ptr = NULL;
 
 	if (rproc->ops->da_to_va) {
-		ptr = rproc->ops->da_to_va(rproc, da, len);
+		ptr = rproc->ops->da_to_va(rproc, da, len, flags);
 		if (ptr)
 			goto out;
 	}
@@ -199,6 +207,61 @@ out:
 	return ptr;
 }
 EXPORT_SYMBOL(rproc_da_to_va);
+
+/**
+ * rproc_pa_to_da() - lookup the rproc device address for a physical address
+ * @rproc: handle of a remote processor
+ * @pa: physical address of the buffer to translate
+ * @da: device address to return
+ *
+ * Communication clients of remote processors usually would need a means to
+ * convert a host buffer pointer to an equivalent device virtual address pointer
+ * that the code running on the remote processor can operate on. These buffer
+ * pointers can either be from the physically contiguous memory regions (or
+ * "carveouts") or can be some memory-mapped Device IO memory. This function
+ * provides a means to translate a given physical address to its associated
+ * device address.
+ *
+ * The function looks through both the carveouts and the device memory mappings
+ * since both of them are stored in separate lists.
+ *
+ * Returns 0 on success, or an appropriate error code otherwise. The translated
+ * device address is returned through the appropriate function argument.
+ */
+int rproc_pa_to_da(struct rproc *rproc, phys_addr_t pa, u64 *da)
+{
+	int ret = -EINVAL;
+	struct rproc_mem_entry *maps = NULL;
+
+	if (!rproc || !da)
+		return -EINVAL;
+
+	if (mutex_lock_interruptible(&rproc->lock))
+		return -EINTR;
+
+	if (rproc->state == RPROC_RUNNING || rproc->state == RPROC_SUSPENDED) {
+		/* Look in the mappings first */
+		list_for_each_entry(maps, &rproc->mappings, node) {
+			if (pa >= maps->dma && pa < (maps->dma + maps->len)) {
+				*da = maps->da + (pa - maps->dma);
+				ret = 0;
+				goto exit;
+			}
+		}
+		/* If not, check in the carveouts */
+		list_for_each_entry(maps, &rproc->carveouts, node) {
+			if (pa >= maps->dma && pa < (maps->dma + maps->len)) {
+				*da = maps->da + (pa - maps->dma);
+				ret = 0;
+				break;
+			}
+		}
+	}
+exit:
+	mutex_unlock(&rproc->lock);
+	return ret;
+}
+EXPORT_SYMBOL(rproc_pa_to_da);
 
 int rproc_alloc_vring(struct rproc_vdev *rvdev, int i)
 {
@@ -240,7 +303,7 @@ int rproc_alloc_vring(struct rproc_vdev *rvdev, int i)
 	if (notifyid > rproc->max_notifyid)
 		rproc->max_notifyid = notifyid;
 
-	dev_dbg(dev, "vring%d: va %p dma %pad size 0x%x idr %d\n",
+	dev_dbg(dev, "vring%d: va %pK dma %pad size 0x%x idr %d\n",
 		i, va, &dma, size, notifyid);
 
 	rvring->va = va;
@@ -300,14 +363,14 @@ void rproc_free_vring(struct rproc_vring *rvring)
 	rsc->vring[idx].notifyid = -1;
 }
 
-static int rproc_vdev_do_probe(struct rproc_subdev *subdev)
+static int rproc_vdev_do_start(struct rproc_subdev *subdev)
 {
 	struct rproc_vdev *rvdev = container_of(subdev, struct rproc_vdev, subdev);
 
 	return rproc_add_virtio_dev(rvdev, rvdev->id);
 }
 
-static void rproc_vdev_do_remove(struct rproc_subdev *subdev)
+static void rproc_vdev_do_stop(struct rproc_subdev *subdev, bool crashed)
 {
 	struct rproc_vdev *rvdev = container_of(subdev, struct rproc_vdev, subdev);
 
@@ -319,6 +382,7 @@ static void rproc_vdev_do_remove(struct rproc_subdev *subdev)
  * @rproc: the remote processor
  * @rsc: the vring resource descriptor
  * @avail: size of available data (for sanity checking the image)
+ * @ver: version number of the resource type
  *
  * This resource entry requests the host to statically register a virtio
  * device (vdev), and setup everything needed to support it. It contains
@@ -342,7 +406,7 @@ static void rproc_vdev_do_remove(struct rproc_subdev *subdev)
  * Returns 0 on success, or an appropriate error code otherwise
  */
 static int rproc_handle_vdev(struct rproc *rproc, struct fw_rsc_vdev *rsc,
-			     int offset, int avail)
+			     int offset, int avail, u16 ver)
 {
 	struct device *dev = &rproc->dev;
 	struct rproc_vdev *rvdev;
@@ -398,8 +462,10 @@ static int rproc_handle_vdev(struct rproc *rproc, struct fw_rsc_vdev *rsc,
 
 	list_add_tail(&rvdev->node, &rproc->rvdevs);
 
-	rproc_add_subdev(rproc, &rvdev->subdev,
-			 rproc_vdev_do_probe, rproc_vdev_do_remove);
+	rvdev->subdev.start = rproc_vdev_do_start;
+	rvdev->subdev.stop = rproc_vdev_do_stop;
+
+	rproc_add_subdev(rproc, &rvdev->subdev);
 
 	return 0;
 
@@ -432,10 +498,108 @@ void rproc_vdev_release(struct kref *ref)
 }
 
 /**
+ * rproc_handle_last_trace() - setup a buffer to capture the trace snapshot
+ *				before recovery
+ * @rproc: the remote processor
+ * @trace: the trace resource descriptor
+ * @count: the index of the trace under process
+ *
+ * The last trace is allocated and the contents of the trace buffer are
+ * copied during a recovery cleanup. Once, the contents get copied, the
+ * trace buffers are cleaned up for re-use.
+ *
+ * It might also happen that the remoteproc binary changes between the
+ * time that it was loaded and the time that it crashed. In this case,
+ * the trace descriptors might have changed too. The last traces are
+ * re-built as required in this case.
+ *
+ * Returns 0 on success, or an appropriate error code otherwise
+ */
+static int rproc_handle_last_trace(struct rproc *rproc,
+				   struct rproc_mem_entry *trace, int count)
+{
+	struct rproc_mem_entry *trace_last, *tmp_trace;
+	struct device *dev = &rproc->dev;
+	char name[15];
+	int i = 0;
+	bool new_trace = false;
+
+	if (!rproc || !trace)
+		return -EINVAL;
+
+	/* we need a new trace in this case */
+	if (count > rproc->num_last_traces) {
+		new_trace = true;
+		/*
+		 * make sure snprintf always null terminates, even if truncating
+		 */
+		snprintf(name, sizeof(name), "trace%d_last", (count - 1));
+		trace_last = kzalloc(sizeof(*trace_last), GFP_KERNEL);
+		if (!trace_last) {
+			dev_err(dev, "kzalloc failed for trace%d_last\n",
+				count);
+			return -ENOMEM;
+		}
+	} else {
+		/* try to reuse buffers here */
+		list_for_each_entry_safe(trace_last, tmp_trace,
+					 &rproc->last_traces, node) {
+			if (++i == count)
+				break;
+		}
+
+		/* if we can reuse the trace, copy buffer and exit */
+		if (trace_last->len == trace->len)
+			goto copy_and_exit;
+
+		/* can reuse the trace struct but not the buffer */
+		vfree(trace_last->va);
+		trace_last->va = NULL;
+		trace_last->len = 0;
+	}
+
+	trace_last->len = trace->len;
+	trace_last->va = vmalloc(sizeof(u32) * trace_last->len);
+	if (!trace_last->va) {
+		dev_err(dev, "vmalloc failed for trace%d_last\n", count);
+		if (!new_trace) {
+			list_del(&trace_last->node);
+			rproc->num_last_traces--;
+		}
+		kfree(trace_last);
+		return -ENOMEM;
+	}
+
+	/* create the debugfs entry */
+	if (new_trace) {
+		trace_last->priv = rproc_create_trace_file(name, rproc,
+							   trace_last);
+		if (!trace_last->priv) {
+			dev_err(dev, "trace%d_last create debugfs failed\n",
+				count);
+			vfree(trace_last->va);
+			kfree(trace_last);
+			return -EINVAL;
+		}
+
+		/* add it to the trace list */
+		list_add_tail(&trace_last->node, &rproc->last_traces);
+		rproc->num_last_traces++;
+	}
+
+copy_and_exit:
+	/* copy the trace to last trace */
+	memcpy(trace_last->va, trace->va, trace->len);
+
+	return 0;
+}
+
+/**
  * rproc_handle_trace() - handle a shared trace buffer resource
  * @rproc: the remote processor
  * @rsc: the trace resource descriptor
  * @avail: size of available data (for sanity checking the image)
+ * @ver: version number of the resource type
  *
  * In case the remote processor dumps trace logs into memory,
  * export it via debugfs.
@@ -447,27 +611,51 @@ void rproc_vdev_release(struct kref *ref)
  *
  * Returns 0 on success, or an appropriate error code otherwise
  */
-static int rproc_handle_trace(struct rproc *rproc, struct fw_rsc_trace *rsc,
-			      int offset, int avail)
+static int rproc_handle_trace(struct rproc *rproc, void *rsc,
+			      int offset, int avail, u16 ver)
 {
 	struct rproc_mem_entry *trace;
 	struct device *dev = &rproc->dev;
+	struct fw_rsc_trace *rsc1;
+	struct fw_rsc_trace2 *rsc2;
 	void *ptr;
 	char name[15];
+	size_t rsc_size;
+	u32 reserved;
+	u64 da;
+	u32 len;
 
-	if (sizeof(*rsc) > avail) {
+	if (!ver) {
+		rsc1 = (struct fw_rsc_trace *)rsc;
+		rsc_size = sizeof(*rsc1);
+		reserved = rsc1->reserved;
+		da = rsc1->da;
+		len = rsc1->len;
+	} else if (ver == 1) {
+		rsc2 = (struct fw_rsc_trace2 *)rsc;
+		rsc_size = sizeof(*rsc2);
+		reserved = rsc2->reserved;
+		da = rsc2->da;
+		len = rsc2->len;
+	} else {
+		dev_err(dev, "unsupported trace rsc version %d\n", ver);
+		return -EINVAL;
+	}
+
+	if (rsc_size > avail) {
 		dev_err(dev, "trace rsc is truncated\n");
 		return -EINVAL;
 	}
 
 	/* make sure reserved bytes are zeroes */
-	if (rsc->reserved) {
-		dev_err(dev, "trace rsc has non zero reserved bytes\n");
+	if (reserved) {
+		dev_err(dev, "trace rsc has non zero reserved bytes, value = 0x%x\n",
+			reserved);
 		return -EINVAL;
 	}
 
 	/* what's the kernel address of this resource ? */
-	ptr = rproc_da_to_va(rproc, rsc->da, rsc->len);
+	ptr = rproc_da_to_va(rproc, da, len, RPROC_FLAGS_NONE);
 	if (!ptr) {
 		dev_err(dev, "erroneous trace resource entry\n");
 		return -EINVAL;
@@ -478,7 +666,7 @@ static int rproc_handle_trace(struct rproc *rproc, struct fw_rsc_trace *rsc,
 		return -ENOMEM;
 
 	/* set the trace buffer dma properties */
-	trace->len = rsc->len;
+	trace->len = len;
 	trace->va = ptr;
 
 	/* make sure snprintf always null terminates, even if truncating */
@@ -496,8 +684,8 @@ static int rproc_handle_trace(struct rproc *rproc, struct fw_rsc_trace *rsc,
 
 	rproc->num_traces++;
 
-	dev_dbg(dev, "%s added: va %p, da 0x%x, len 0x%x\n",
-		name, ptr, rsc->da, rsc->len);
+	dev_dbg(dev, "%s added: va %pK, da 0x%llx, len 0x%x\n",
+		name, ptr, da, len);
 
 	return 0;
 }
@@ -507,6 +695,7 @@ static int rproc_handle_trace(struct rproc *rproc, struct fw_rsc_trace *rsc,
  * @rproc: remote processor handle
  * @rsc: the devmem resource entry
  * @avail: size of available data (for sanity checking the image)
+ * @ver: version number of the resource type
  *
  * Remote processors commonly need to access certain on-chip peripherals.
  *
@@ -528,7 +717,7 @@ static int rproc_handle_trace(struct rproc *rproc, struct fw_rsc_trace *rsc,
  * are outside those ranges.
  */
 static int rproc_handle_devmem(struct rproc *rproc, struct fw_rsc_devmem *rsc,
-			       int offset, int avail)
+			       int offset, int avail, u16 ver)
 {
 	struct rproc_mem_entry *mapping;
 	struct device *dev = &rproc->dev;
@@ -536,7 +725,7 @@ static int rproc_handle_devmem(struct rproc *rproc, struct fw_rsc_devmem *rsc,
 
 	/* no point in handling this resource without a valid iommu domain */
 	if (!rproc->domain)
-		return -EINVAL;
+		return 0;
 
 	if (sizeof(*rsc) > avail) {
 		dev_err(dev, "devmem rsc is truncated\n");
@@ -566,6 +755,7 @@ static int rproc_handle_devmem(struct rproc *rproc, struct fw_rsc_devmem *rsc,
 	 * We can't trust the remote processor not to change the resource
 	 * table, so we must maintain this info independently.
 	 */
+	mapping->dma = rsc->pa;
 	mapping->da = rsc->da;
 	mapping->len = rsc->len;
 	list_add_tail(&mapping->node, &rproc->mappings);
@@ -585,6 +775,7 @@ out:
  * @rproc: rproc handle
  * @rsc: the resource entry
  * @avail: size of available data (for image validation)
+ * @ver: version number of the resource type
  *
  * This function will handle firmware requests for allocation of physically
  * contiguous memory regions.
@@ -600,7 +791,7 @@ out:
  */
 static int rproc_handle_carveout(struct rproc *rproc,
 				 struct fw_rsc_carveout *rsc,
-				 int offset, int avail)
+				 int offset, int avail, u16 ver)
 {
 	struct rproc_mem_entry *carveout, *mapping;
 	struct device *dev = &rproc->dev;
@@ -634,7 +825,7 @@ static int rproc_handle_carveout(struct rproc *rproc,
 		goto free_carv;
 	}
 
-	dev_dbg(dev, "carveout va %p, dma %pad, len 0x%x\n",
+	dev_dbg(dev, "carveout va %pK, dma %pad, len 0x%x\n",
 		va, &dma, rsc->len);
 
 	/*
@@ -706,6 +897,7 @@ static int rproc_handle_carveout(struct rproc *rproc,
 	carveout->len = rsc->len;
 	carveout->dma = dma;
 	carveout->da = rsc->da;
+	strlcpy(carveout->name, rsc->name, sizeof(carveout->name));
 
 	list_add_tail(&carveout->node, &rproc->carveouts);
 
@@ -720,6 +912,42 @@ free_carv:
 	return ret;
 }
 
+/**
+ * rproc_handle_vendor_rsc() - provide implementation specific hook
+ *			       to handle vendor/custom resources
+ * @rproc: the remote processor
+ * @rsc: vendor resource to be handled by remoteproc drivers
+ * @offset: offset of the resource data in resource table
+ * @avail: size of available data
+ *
+ * Remoteproc implementations might want to add resource table entries
+ * that are not generic enough to be handled by the framework. This
+ * provides a hook to handle such custom resources. Note that a single
+ * hook is reused between RSC_PRELOAD_VENDOR and RSC_PRELOAD_VENDOR
+ * resources with the platform driver implementation distinguishing
+ * the two based on the sub-type resource.
+ *
+ * Returns 0 on success, or an appropriate error code otherwise
+ */
+static int rproc_handle_vendor_rsc(struct rproc *rproc,
+				   struct fw_rsc_vendor *rsc,
+				   int offset, int avail)
+{
+	struct device *dev = &rproc->dev;
+
+	if (!rproc->ops->handle_vendor_rsc) {
+		dev_err(dev, "vendor resource handler not implemented, ignoring resource\n");
+		return 0;
+	}
+
+	if (sizeof(*rsc) > avail) {
+		dev_err(dev, "vendor resource is truncated\n");
+		return -EINVAL;
+	}
+
+	return rproc->ops->handle_vendor_rsc(rproc, (void *)rsc);
+}
+
 /*
  * A lookup table for resource handlers. The indices are defined in
  * enum fw_resource_type.
@@ -728,21 +956,30 @@ static rproc_handle_resource_t rproc_loading_handlers[RSC_LAST] = {
 	[RSC_CARVEOUT] = (rproc_handle_resource_t)rproc_handle_carveout,
 	[RSC_DEVMEM] = (rproc_handle_resource_t)rproc_handle_devmem,
 	[RSC_TRACE] = (rproc_handle_resource_t)rproc_handle_trace,
+	[RSC_PRELOAD_VENDOR] = (rproc_handle_resource_t)rproc_handle_vendor_rsc,
 	[RSC_VDEV] = (rproc_handle_resource_t)rproc_handle_vdev,
 };
 
+static rproc_handle_resource_t rproc_post_loading_handlers[RSC_LAST] = {
+	[RSC_POSTLOAD_VENDOR] =
+			(rproc_handle_resource_t)rproc_handle_vendor_rsc,
+};
+
 /* handle firmware resource entries before booting the remote processor */
-static int rproc_handle_resources(struct rproc *rproc, int len,
+static int rproc_handle_resources(struct rproc *rproc,
 				  rproc_handle_resource_t handlers[RSC_LAST])
 {
 	struct device *dev = &rproc->dev;
 	rproc_handle_resource_t handler;
 	int ret = 0, i;
 
+	if (!rproc->table_ptr)
+		return 0;
+
 	for (i = 0; i < rproc->table_ptr->num; i++) {
 		int offset = rproc->table_ptr->offset[i];
 		struct fw_rsc_hdr *hdr = (void *)rproc->table_ptr + offset;
-		int avail = len - offset - sizeof(*hdr);
+		int avail = rproc->table_sz - offset - sizeof(*hdr);
 		void *rsc = (void *)hdr + sizeof(*hdr);
 
 		/* make sure table isn't truncated */
@@ -751,18 +988,19 @@ static int rproc_handle_resources(struct rproc *rproc, int len,
 			return -EINVAL;
 		}
 
-		dev_dbg(dev, "rsc: type %d\n", hdr->type);
+		dev_dbg(dev, "rsc: type %d vers %d\n", hdr->st.t, hdr->st.v);
 
-		if (hdr->type >= RSC_LAST) {
-			dev_warn(dev, "unsupported resource %d\n", hdr->type);
+		if (hdr->st.t >= RSC_LAST) {
+			dev_warn(dev, "unsupported resource %d\n", hdr->st.t);
 			continue;
 		}
 
-		handler = handlers[hdr->type];
+		handler = handlers[hdr->st.t];
 		if (!handler)
 			continue;
 
-		ret = handler(rproc, rsc, offset + sizeof(*hdr), avail);
+		ret = handler(rproc, rsc, offset + sizeof(*hdr), avail,
+			      hdr->st.v);
 		if (ret)
 			break;
 	}
@@ -770,32 +1008,98 @@ static int rproc_handle_resources(struct rproc *rproc, int len,
 	return ret;
 }
 
-static int rproc_probe_subdevices(struct rproc *rproc)
+static int rproc_prepare_subdevices(struct rproc *rproc)
 {
 	struct rproc_subdev *subdev;
 	int ret;
 
 	list_for_each_entry(subdev, &rproc->subdevs, node) {
-		ret = subdev->probe(subdev);
-		if (ret)
-			goto unroll_registration;
+		if (subdev->prepare) {
+			ret = subdev->prepare(subdev);
+			if (ret)
+				goto unroll_preparation;
+		}
+	}
+
+	return 0;
+
+unroll_preparation:
+	list_for_each_entry_continue_reverse(subdev, &rproc->subdevs, node) {
+		if (subdev->unprepare)
+			subdev->unprepare(subdev);
+	}
+
+	return ret;
+}
+
+static int rproc_start_subdevices(struct rproc *rproc)
+{
+	struct rproc_subdev *subdev;
+	int ret;
+
+	list_for_each_entry(subdev, &rproc->subdevs, node) {
+		if (subdev->start) {
+			ret = subdev->start(subdev);
+			if (ret)
+				goto unroll_registration;
+		}
 	}
 
 	return 0;
 
 unroll_registration:
-	list_for_each_entry_continue_reverse(subdev, &rproc->subdevs, node)
-		subdev->remove(subdev);
+	list_for_each_entry_continue_reverse(subdev, &rproc->subdevs, node) {
+		if (subdev->stop)
+			subdev->stop(subdev, true);
+	}
 
 	return ret;
 }
 
-static void rproc_remove_subdevices(struct rproc *rproc)
+static void rproc_stop_subdevices(struct rproc *rproc, bool crashed)
 {
 	struct rproc_subdev *subdev;
 
-	list_for_each_entry(subdev, &rproc->subdevs, node)
-		subdev->remove(subdev);
+	list_for_each_entry_reverse(subdev, &rproc->subdevs, node) {
+		if (subdev->stop)
+			subdev->stop(subdev, crashed);
+	}
+}
+
+static void rproc_unprepare_subdevices(struct rproc *rproc)
+{
+	struct rproc_subdev *subdev;
+
+	list_for_each_entry_reverse(subdev, &rproc->subdevs, node) {
+		if (subdev->unprepare)
+			subdev->unprepare(subdev);
+	}
+}
+
+/**
+ * rproc_coredump_cleanup() - clean up dump_segments list
+ * @rproc: the remote processor handle
+ */
+static void rproc_coredump_cleanup(struct rproc *rproc)
+{
+	struct rproc_dump_segment *entry, *tmp;
+
+	list_for_each_entry_safe(entry, tmp, &rproc->dump_segments, node) {
+		list_del(&entry->node);
+		kfree(entry);
+	}
+}
+
+/**
+ * rproc_free_last_trace() - helper function to cleanup a last trace entry
+ * @trace: the last trace element to be cleaned up
+ */
+static void rproc_free_last_trace(struct rproc_mem_entry *trace)
+{
+	rproc_remove_trace_file(trace->priv);
+	list_del(&trace->node);
+	vfree(trace->va);
+	kfree(trace);
 }
 
 /**
@@ -810,13 +1114,31 @@ static void rproc_resource_cleanup(struct rproc *rproc)
 	struct rproc_mem_entry *entry, *tmp;
 	struct rproc_vdev *rvdev, *rvtmp;
 	struct device *dev = &rproc->dev;
+	int count = 0, i = rproc->num_traces;
 
 	/* clean up debugfs trace entries */
 	list_for_each_entry_safe(entry, tmp, &rproc->traces, node) {
+		/* handle last trace here */
+		if (rproc->state == RPROC_CRASHED)
+			rproc_handle_last_trace(rproc, entry, ++count);
+
 		rproc_remove_trace_file(entry->priv);
-		rproc->num_traces--;
 		list_del(&entry->node);
 		kfree(entry);
+	}
+	rproc->num_traces = 0;
+
+	/*
+	 * clean up debugfs last trace entries. This either deletes all last
+	 * trace entries during cleanup or just the remaining entries, if any,
+	 * in case of a crash.
+	 */
+	list_for_each_entry_safe(entry, tmp, &rproc->last_traces, node) {
+		/* skip the valid traces */
+		if ((i--) && rproc->state == RPROC_CRASHED)
+			continue;
+		rproc_free_last_trace(entry);
+		rproc->num_last_traces--;
 	}
 
 	/* clean up iommu mapping entries */
@@ -845,26 +1167,75 @@ static void rproc_resource_cleanup(struct rproc *rproc)
 	/* clean up remote vdev entries */
 	list_for_each_entry_safe(rvdev, rvtmp, &rproc->rvdevs, node)
 		kref_put(&rvdev->refcount, rproc_vdev_release);
+
+	rproc_coredump_cleanup(rproc);
 }
 
-static int rproc_start(struct rproc *rproc, const struct firmware *fw)
+/*
+ * take a firmware and boot a remote processor with it.
+ */
+static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 {
-	struct resource_table *table, *loaded_table;
 	struct device *dev = &rproc->dev;
-	int ret, tablesz;
+	const char *name = rproc->firmware;
+	struct resource_table *loaded_table;
+	int ret;
 
-	/* look for the resource table */
-	table = rproc_find_rsc_table(rproc, fw, &tablesz);
-	if (!table) {
-		dev_err(dev, "Resource table look up failed\n");
-		return -EINVAL;
+	ret = rproc_fw_sanity_check(rproc, fw);
+	if (ret)
+		return ret;
+
+	if (!rproc->skip_firmware_request)
+		dev_info(dev, "Booting fw image %s, size %zd\n",
+			 name, fw->size);
+	else
+		dev_info(dev, "Booting unspecified pre-loaded fw image\n");
+
+	/*
+	 * if enabling an IOMMU isn't relevant for this rproc, this is
+	 * just a nop
+	 */
+	ret = rproc_enable_iommu(rproc);
+	if (ret) {
+		dev_err(dev, "can't enable iommu: %d\n", ret);
+		return ret;
 	}
 
-	/* load the ELF segments to memory */
-	ret = rproc_load_segments(rproc, fw);
+	/* Prepare rproc for firmware loading if needed */
+	if (rproc->ops->prepare) {
+		ret = rproc->ops->prepare(rproc);
+		if (ret) {
+			dev_err(dev, "can't prepare rproc %s: %d\n",
+				rproc->name, ret);
+			goto disable_iommu;
+		}
+	}
+
+	rproc->bootaddr = rproc_get_boot_addr(rproc, fw);
+
+	/* Load resource table, core dump segment list etc from the firmware */
+	ret = rproc_parse_fw(rproc, fw);
+	if (ret)
+		goto unprepare_rproc;
+
+	/* reset max_notifyid */
+	rproc->max_notifyid = -1;
+
+	/* handle fw resources which are required to boot rproc */
+	ret = rproc_handle_resources(rproc, rproc_loading_handlers);
 	if (ret) {
-		dev_err(dev, "Failed to load program segments: %d\n", ret);
-		return ret;
+		dev_err(dev, "Failed to process resources: %d\n", ret);
+		goto clean_up_resources;
+	}
+
+	if (!rproc->skip_load) {
+		/* load the ELF segments to memory */
+		ret = rproc_load_segments(rproc, fw);
+		if (ret) {
+			dev_err(dev, "Failed to load program segments: %d\n",
+				ret);
+			goto clean_up_resources;
+		}
 	}
 
 	/*
@@ -877,24 +1248,38 @@ static int rproc_start(struct rproc *rproc, const struct firmware *fw)
 	 */
 	loaded_table = rproc_find_loaded_rsc_table(rproc, fw);
 	if (loaded_table) {
-		memcpy(loaded_table, rproc->cached_table, tablesz);
+		memcpy(loaded_table, rproc->cached_table, rproc->table_sz);
 		rproc->table_ptr = loaded_table;
+	}
+
+	/* handle fw resources which require fw segments to be loaded */
+	ret = rproc_handle_resources(rproc, rproc_post_loading_handlers);
+	if (ret) {
+		dev_err(dev, "Failed to process post-loading resources: %d\n",
+			ret);
+		goto reset_table_ptr;
+	}
+
+	ret = rproc_prepare_subdevices(rproc);
+	if (ret) {
+		dev_err(dev, "failed to prepare subdevices for %s: %d\n",
+			rproc->name, ret);
+		goto reset_table_ptr;
 	}
 
 	/* power up the remote processor */
 	ret = rproc->ops->start(rproc);
 	if (ret) {
 		dev_err(dev, "can't start rproc %s: %d\n", rproc->name, ret);
-		return ret;
+		goto unprepare_subdevices;
 	}
 
-	/* probe any subdevices for the remote processor */
-	ret = rproc_probe_subdevices(rproc);
+	/* Start any subdevices for the remote processor */
+	ret = rproc_start_subdevices(rproc);
 	if (ret) {
 		dev_err(dev, "failed to probe subdevices for %s: %d\n",
 			rproc->name, ret);
-		rproc->ops->stop(rproc);
-		return ret;
+		goto stop_rproc;
 	}
 
 	rproc->state = RPROC_RUNNING;
@@ -902,79 +1287,24 @@ static int rproc_start(struct rproc *rproc, const struct firmware *fw)
 	dev_info(dev, "remote processor %s is now up\n", rproc->name);
 
 	return 0;
-}
 
-/*
- * take a firmware and boot a remote processor with it.
- */
-static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
-{
-	struct device *dev = &rproc->dev;
-	const char *name = rproc->firmware;
-	struct resource_table *table;
-	int ret, tablesz;
-
-	ret = rproc_fw_sanity_check(rproc, fw);
-	if (ret)
-		return ret;
-
-	dev_info(dev, "Booting fw image %s, size %zd\n", name, fw->size);
-
-	/*
-	 * if enabling an IOMMU isn't relevant for this rproc, this is
-	 * just a nop
-	 */
-	ret = rproc_enable_iommu(rproc);
-	if (ret) {
-		dev_err(dev, "can't enable iommu: %d\n", ret);
-		return ret;
-	}
-
-	rproc->bootaddr = rproc_get_boot_addr(rproc, fw);
-	ret = -EINVAL;
-
-	/* look for the resource table */
-	table = rproc_find_rsc_table(rproc, fw, &tablesz);
-	if (!table) {
-		dev_err(dev, "Failed to find resource table\n");
-		goto clean_up;
-	}
-
-	/*
-	 * Create a copy of the resource table. When a virtio device starts
-	 * and calls vring_new_virtqueue() the address of the allocated vring
-	 * will be stored in the cached_table. Before the device is started,
-	 * cached_table will be copied into device memory.
-	 */
-	rproc->cached_table = kmemdup(table, tablesz, GFP_KERNEL);
-	if (!rproc->cached_table)
-		goto clean_up;
-
+stop_rproc:
+	rproc->ops->stop(rproc);
+unprepare_subdevices:
+	rproc_unprepare_subdevices(rproc);
+reset_table_ptr:
 	rproc->table_ptr = rproc->cached_table;
-
-	/* reset max_notifyid */
-	rproc->max_notifyid = -1;
-
-	/* handle fw resources which are required to boot rproc */
-	ret = rproc_handle_resources(rproc, tablesz, rproc_loading_handlers);
-	if (ret) {
-		dev_err(dev, "Failed to process resources: %d\n", ret);
-		goto clean_up_resources;
-	}
-
-	ret = rproc_start(rproc, fw);
-	if (ret)
-		goto clean_up_resources;
-
-	return 0;
-
 clean_up_resources:
 	rproc_resource_cleanup(rproc);
-clean_up:
 	kfree(rproc->cached_table);
 	rproc->cached_table = NULL;
 	rproc->table_ptr = NULL;
-
+	rproc->table_sz = 0;
+unprepare_rproc:
+	/* release HW resources if needed */
+	if (rproc->ops->unprepare)
+		rproc->ops->unprepare(rproc);
+disable_iommu:
 	rproc_disable_iommu(rproc);
 	return ret;
 }
@@ -1013,30 +1343,112 @@ static int rproc_trigger_auto_boot(struct rproc *rproc)
 	return ret;
 }
 
-static int rproc_stop(struct rproc *rproc)
+/**
+ * rproc_coredump_add_segment() - add segment of device memory to coredump
+ * @rproc:	handle of a remote processor
+ * @da:		device address
+ * @size:	size of segment
+ *
+ * Add device memory to the list of segments to be included in a coredump for
+ * the remoteproc.
+ *
+ * Return: 0 on success, negative errno on error.
+ */
+int rproc_coredump_add_segment(struct rproc *rproc, dma_addr_t da, size_t size)
 {
-	struct device *dev = &rproc->dev;
-	int ret;
+	struct rproc_dump_segment *segment;
 
-	/* remove any subdevices for the remote processor */
-	rproc_remove_subdevices(rproc);
+	segment = kzalloc(sizeof(*segment), GFP_KERNEL);
+	if (!segment)
+		return -ENOMEM;
 
-	/* power off the remote processor */
-	ret = rproc->ops->stop(rproc);
-	if (ret) {
-		dev_err(dev, "can't stop rproc: %d\n", ret);
-		return ret;
-	}
+	segment->da = da;
+	segment->size = size;
 
-	/* if in crash state, unlock crash handler */
-	if (rproc->state == RPROC_CRASHED)
-		complete_all(&rproc->crash_comp);
-
-	rproc->state = RPROC_OFFLINE;
-
-	dev_info(dev, "stopped remote processor %s\n", rproc->name);
+	list_add_tail(&segment->node, &rproc->dump_segments);
 
 	return 0;
+}
+EXPORT_SYMBOL(rproc_coredump_add_segment);
+
+/**
+ * rproc_coredump() - perform coredump
+ * @rproc:	rproc handle
+ *
+ * This function will generate an ELF header for the registered segments
+ * and create a devcoredump device associated with rproc.
+ */
+static void rproc_coredump(struct rproc *rproc)
+{
+	struct rproc_dump_segment *segment;
+	struct elf32_phdr *phdr;
+	struct elf32_hdr *ehdr;
+	size_t data_size;
+	size_t offset;
+	void *data;
+	void *ptr;
+	int phnum = 0;
+
+	if (list_empty(&rproc->dump_segments))
+		return;
+
+	data_size = sizeof(*ehdr);
+	list_for_each_entry(segment, &rproc->dump_segments, node) {
+		data_size += sizeof(*phdr) + segment->size;
+
+		phnum++;
+	}
+
+	data = vmalloc(data_size);
+	if (!data)
+		return;
+
+	ehdr = data;
+
+	memset(ehdr, 0, sizeof(*ehdr));
+	memcpy(ehdr->e_ident, ELFMAG, SELFMAG);
+	ehdr->e_ident[EI_CLASS] = ELFCLASS32;
+	ehdr->e_ident[EI_DATA] = ELFDATA2LSB;
+	ehdr->e_ident[EI_VERSION] = EV_CURRENT;
+	ehdr->e_ident[EI_OSABI] = ELFOSABI_NONE;
+	ehdr->e_type = ET_CORE;
+	ehdr->e_machine = EM_NONE;
+	ehdr->e_version = EV_CURRENT;
+	ehdr->e_entry = rproc->bootaddr;
+	ehdr->e_phoff = sizeof(*ehdr);
+	ehdr->e_ehsize = sizeof(*ehdr);
+	ehdr->e_phentsize = sizeof(*phdr);
+	ehdr->e_phnum = phnum;
+
+	phdr = data + ehdr->e_phoff;
+	offset = ehdr->e_phoff + sizeof(*phdr) * ehdr->e_phnum;
+	list_for_each_entry(segment, &rproc->dump_segments, node) {
+		memset(phdr, 0, sizeof(*phdr));
+		phdr->p_type = PT_LOAD;
+		phdr->p_offset = offset;
+		phdr->p_vaddr = segment->da;
+		phdr->p_paddr = segment->da;
+		phdr->p_filesz = segment->size;
+		phdr->p_memsz = segment->size;
+		phdr->p_flags = PF_R | PF_W | PF_X;
+		phdr->p_align = 0;
+
+		ptr = rproc_da_to_va(rproc, segment->da, segment->size,
+				     RPROC_FLAGS_NONE);
+		if (!ptr) {
+			dev_err(&rproc->dev,
+				"invalid coredump segment (%pad, %zu)\n",
+				&segment->da, segment->size);
+			memset(data + offset, 0xff, segment->size);
+		} else {
+			memcpy(data + offset, ptr, segment->size);
+		}
+
+		offset += phdr->p_filesz;
+		phdr++;
+	}
+
+	dev_coredumpv(&rproc->dev, data, data_size, GFP_KERNEL);
 }
 
 /**
@@ -1051,40 +1463,23 @@ static int rproc_stop(struct rproc *rproc)
  */
 int rproc_trigger_recovery(struct rproc *rproc)
 {
-	const struct firmware *firmware_p;
-	struct device *dev = &rproc->dev;
-	int ret;
-
-	dev_err(dev, "recovering %s\n", rproc->name);
+	dev_err(&rproc->dev, "recovering %s\n", rproc->name);
 
 	init_completion(&rproc->crash_comp);
 
-	ret = mutex_lock_interruptible(&rproc->lock);
-	if (ret)
-		return ret;
-
-	ret = rproc_stop(rproc);
-	if (ret)
-		goto unlock_mutex;
+	/* shut down the remote */
+	/* TODO: make sure this works with rproc->power > 1 */
+	rproc_shutdown(rproc);
 
 	/* wait until there is no more rproc users */
 	wait_for_completion(&rproc->crash_comp);
 
-	/* load firmware */
-	ret = request_firmware(&firmware_p, rproc->firmware, dev);
-	if (ret < 0) {
-		dev_err(dev, "request_firmware failed: %d\n", ret);
-		goto unlock_mutex;
-	}
+	/*
+	 * boot the remote processor up again
+	 */
+	rproc_boot(rproc);
 
-	/* boot the remote processor up again */
-	ret = rproc_start(rproc, firmware_p);
-
-	release_firmware(firmware_p);
-
-unlock_mutex:
-	mutex_unlock(&rproc->lock);
-	return ret;
+	return 0;
 }
 
 /**
@@ -1119,7 +1514,37 @@ static void rproc_crash_handler_work(struct work_struct *work)
 }
 
 /**
- * __rproc_boot() - boot a remote processor
+ * rproc_get_id() - return the id for the rproc device
+ * @rproc: handle of a remote processor
+ *
+ * Each rproc device is associated with a platform device, which is created
+ * either from device tree (majority newer platforms) or using legacy style
+ * platform device creation (fewer legacy platforms). This function retrieves
+ * an unique id for each remote processor and is useful for clients needing
+ * to distinguish each of the remoteprocs. This unique id is derived using
+ * the platform device id for non-DT devices, or an alternate alias id for
+ * DT devices (since they do not have a valid platform device id). It is
+ * assumed that the platform devices were created with known ids or were
+ * given proper alias ids using the stem "rproc".
+ *
+ * Return: alias id for DT devices or platform device id for non-DT devices
+ * associated with the rproc
+ */
+int rproc_get_id(struct rproc *rproc)
+{
+	struct device *dev = rproc->dev.parent;
+	struct device_node *np = dev->of_node;
+	struct platform_device *pdev = to_platform_device(dev);
+
+	if (np)
+		return of_alias_get_id(np, "rproc");
+	else
+		return pdev->id;
+}
+EXPORT_SYMBOL(rproc_get_id);
+
+/**
+ * rproc_boot() - boot a remote processor
  * @rproc: handle of a remote processor
  *
  * Boot a remote processor (i.e. load its firmware, power it on, ...).
@@ -1129,7 +1554,7 @@ static void rproc_crash_handler_work(struct work_struct *work)
  *
  * Returns 0 on success, and an appropriate error value otherwise.
  */
-static int __rproc_boot(struct rproc *rproc)
+int rproc_boot(struct rproc *rproc)
 {
 	const struct firmware *firmware_p;
 	struct device *dev;
@@ -1162,16 +1587,19 @@ static int __rproc_boot(struct rproc *rproc)
 
 	dev_info(dev, "powering up %s\n", rproc->name);
 
-	/* load firmware */
-	ret = request_firmware(&firmware_p, rproc->firmware, dev);
-	if (ret < 0) {
-		dev_err(dev, "request_firmware failed: %d\n", ret);
-		goto downref_rproc;
+	if (!rproc->skip_firmware_request) {
+		/* load firmware */
+		ret = request_firmware(&firmware_p, rproc->firmware, dev);
+		if (ret < 0) {
+			dev_err(dev, "request_firmware failed: %d\n", ret);
+			goto downref_rproc;
+		}
 	}
 
 	ret = rproc_fw_boot(rproc, firmware_p);
 
-	release_firmware(firmware_p);
+	if (!rproc->skip_firmware_request)
+		release_firmware(firmware_p);
 
 downref_rproc:
 	if (ret)
@@ -1179,15 +1607,6 @@ downref_rproc:
 unlock_mutex:
 	mutex_unlock(&rproc->lock);
 	return ret;
-}
-
-/**
- * rproc_boot() - boot a remote processor
- * @rproc: handle of a remote processor
- */
-int rproc_boot(struct rproc *rproc)
-{
-	return __rproc_boot(rproc);
 }
 EXPORT_SYMBOL(rproc_boot);
 
@@ -1214,6 +1633,7 @@ void rproc_shutdown(struct rproc *rproc)
 {
 	struct device *dev = &rproc->dev;
 	int ret;
+	bool crashed = false;
 
 	ret = mutex_lock_interruptible(&rproc->lock);
 	if (ret) {
@@ -1225,14 +1645,35 @@ void rproc_shutdown(struct rproc *rproc)
 	if (!atomic_dec_and_test(&rproc->power))
 		goto out;
 
-	ret = rproc_stop(rproc);
+	if (rproc->state == RPROC_CRASHED)
+		crashed = true;
+
+	/* remove any subdevices for the remote processor */
+	rproc_stop_subdevices(rproc, crashed);
+
+	/* power off the remote processor */
+	ret = rproc->ops->stop(rproc);
 	if (ret) {
 		atomic_inc(&rproc->power);
+		dev_err(dev, "can't stop rproc: %d\n", ret);
 		goto out;
 	}
 
+	rproc_unprepare_subdevices(rproc);
+
+	/* generate coredump */
+	if (rproc->state == RPROC_CRASHED)
+		rproc_coredump(rproc);
+
+	/* the installed resource table may no longer be accessible */
+	rproc->table_ptr = rproc->cached_table;
+
 	/* clean up all acquired resources */
 	rproc_resource_cleanup(rproc);
+
+	/* release HW resources if needed */
+	if (rproc->ops->unprepare)
+		rproc->ops->unprepare(rproc);
 
 	rproc_disable_iommu(rproc);
 
@@ -1240,6 +1681,15 @@ void rproc_shutdown(struct rproc *rproc)
 	kfree(rproc->cached_table);
 	rproc->cached_table = NULL;
 	rproc->table_ptr = NULL;
+
+	/* if in crash state, unlock crash handler */
+	if (rproc->state == RPROC_CRASHED)
+		complete_all(&rproc->crash_comp);
+
+	rproc->state = RPROC_OFFLINE;
+
+	dev_info(dev, "stopped remote processor %s\n", rproc->name);
+
 out:
 	mutex_unlock(&rproc->lock);
 }
@@ -1366,10 +1816,12 @@ static void rproc_type_release(struct device *dev)
 		ida_simple_remove(&rproc_dev_index, rproc->index);
 
 	kfree(rproc->firmware);
+	kfree(rproc->ops);
+	kfree(rproc->name);
 	kfree(rproc);
 }
 
-static struct device_type rproc_type = {
+static const struct device_type rproc_type = {
 	.name		= "remoteproc",
 	.release	= rproc_type_release,
 };
@@ -1430,9 +1882,21 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 		return NULL;
 	}
 
+	rproc->ops = kmemdup(ops, sizeof(*ops), GFP_KERNEL);
+	if (!rproc->ops) {
+		kfree(p);
+		kfree(rproc);
+		return NULL;
+	}
+
 	rproc->firmware = p;
-	rproc->name = name;
-	rproc->ops = ops;
+	rproc->name = kstrdup(name, GFP_KERNEL);
+	if (!rproc->name) {
+		kfree(p);
+		kfree(rproc->ops);
+		kfree(rproc);
+		return NULL;
+	}
 	rproc->priv = &rproc[1];
 	rproc->auto_boot = true;
 
@@ -1440,6 +1904,7 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	rproc->dev.parent = dev;
 	rproc->dev.type = &rproc_type;
 	rproc->dev.class = &rproc_class;
+	rproc->dev.driver_data = rproc;
 
 	/* Assign a unique device index and name */
 	rproc->index = ida_simple_get(&rproc_dev_index, 0, 0, GFP_KERNEL);
@@ -1453,8 +1918,14 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 
 	atomic_set(&rproc->power, 0);
 
-	/* Set ELF as the default fw_ops handler */
-	rproc->fw_ops = &rproc_elf_fw_ops;
+	/* Default to ELF loader if no load function is specified */
+	if (!rproc->ops->load) {
+		rproc->ops->load = rproc_elf_load_segments;
+		rproc->ops->parse_fw = rproc_elf_load_rsc_table;
+		rproc->ops->find_loaded_rsc_table = rproc_elf_find_loaded_rsc_table;
+		rproc->ops->sanity_check = rproc_elf_sanity_check;
+		rproc->ops->get_boot_addr = rproc_elf_get_boot_addr;
+	}
 
 	mutex_init(&rproc->lock);
 
@@ -1463,8 +1934,10 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	INIT_LIST_HEAD(&rproc->carveouts);
 	INIT_LIST_HEAD(&rproc->mappings);
 	INIT_LIST_HEAD(&rproc->traces);
+	INIT_LIST_HEAD(&rproc->last_traces);
 	INIT_LIST_HEAD(&rproc->rvdevs);
 	INIT_LIST_HEAD(&rproc->subdevs);
+	INIT_LIST_HEAD(&rproc->dump_segments);
 
 	INIT_WORK(&rproc->crash_handler, rproc_crash_handler_work);
 	init_completion(&rproc->crash_comp);
@@ -1523,6 +1996,8 @@ EXPORT_SYMBOL(rproc_put);
  */
 int rproc_del(struct rproc *rproc)
 {
+	struct rproc_mem_entry *entry, *tmp;
+
 	if (!rproc)
 		return -EINVAL;
 
@@ -1534,6 +2009,12 @@ int rproc_del(struct rproc *rproc)
 	mutex_lock(&rproc->lock);
 	rproc->state = RPROC_DELETED;
 	mutex_unlock(&rproc->lock);
+
+	/* clean up debugfs last trace entries */
+	list_for_each_entry_safe(entry, tmp, &rproc->last_traces, node) {
+		rproc_free_last_trace(entry);
+		rproc->num_last_traces--;
+	}
 
 	rproc_delete_debug_dir(rproc);
 
@@ -1552,17 +2033,11 @@ EXPORT_SYMBOL(rproc_del);
  * rproc_add_subdev() - add a subdevice to a remoteproc
  * @rproc: rproc handle to add the subdevice to
  * @subdev: subdev handle to register
- * @probe: function to call when the rproc boots
- * @remove: function to call when the rproc shuts down
+ *
+ * Caller is responsible for populating optional subdevice function pointers.
  */
-void rproc_add_subdev(struct rproc *rproc,
-		      struct rproc_subdev *subdev,
-		      int (*probe)(struct rproc_subdev *subdev),
-		      void (*remove)(struct rproc_subdev *subdev))
+void rproc_add_subdev(struct rproc *rproc, struct rproc_subdev *subdev)
 {
-	subdev->probe = probe;
-	subdev->remove = remove;
-
 	list_add_tail(&subdev->node, &rproc->subdevs);
 }
 EXPORT_SYMBOL(rproc_add_subdev);
@@ -1577,6 +2052,23 @@ void rproc_remove_subdev(struct rproc *rproc, struct rproc_subdev *subdev)
 	list_del(&subdev->node);
 }
 EXPORT_SYMBOL(rproc_remove_subdev);
+
+/**
+ * rproc_get_by_child() - acquire rproc handle of @dev's ancestor
+ * @dev:	child device to find ancestor of
+ *
+ * Returns the ancestor rproc instance, or NULL if not found.
+ */
+struct rproc *rproc_get_by_child(struct device *dev)
+{
+	for (dev = dev->parent; dev; dev = dev->parent) {
+		if (dev->type == &rproc_type)
+			return dev->driver_data;
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL(rproc_get_by_child);
 
 /**
  * rproc_report_crash() - rproc crash reporter function
@@ -1599,10 +2091,74 @@ void rproc_report_crash(struct rproc *rproc, enum rproc_crash_type type)
 	dev_err(&rproc->dev, "crash detected in %s: type %s\n",
 		rproc->name, rproc_crash_to_string(type));
 
-	/* create a new task to handle the error */
-	schedule_work(&rproc->crash_handler);
+	/* create a new task to handle the error if not scheduled already */
+	if (!work_busy(&rproc->crash_handler))
+		schedule_work(&rproc->crash_handler);
 }
 EXPORT_SYMBOL(rproc_report_crash);
+
+/**
+ * rproc_set_firmware() - assign a new firmware
+ * @rproc: rproc handle to which the new firmware is being assigned
+ * @fw_name: new firmware name to be assigned
+ *
+ * This function allows remoteproc drivers or clients to configure a custom
+ * firmware name that is different from the default name used during remoteproc
+ * registration. The function does not trigger a remote processor boot,
+ * only sets the firmware name used for a subsequent boot. This function
+ * should also be called only when the remote processor is offline.
+ *
+ * This allows either the userspace to configure a different name through
+ * sysfs or a kernel-level remoteproc or a remoteproc client driver to set
+ * a specific firmware when it is controlling the boot and shutdown of the
+ * remote processor.
+ *
+ * Returns 0 on success or a negative value upon failure
+ */
+int rproc_set_firmware(struct rproc *rproc, const char *fw_name)
+{
+	struct device *dev;
+	int ret, len;
+	char *p;
+
+	if (!rproc || !fw_name)
+		return -EINVAL;
+
+	dev = rproc->dev.parent;
+
+	ret = mutex_lock_interruptible(&rproc->lock);
+	if (ret) {
+		dev_err(dev, "can't lock rproc %s: %d\n", rproc->name, ret);
+		return -EINVAL;
+	}
+
+	if (rproc->state != RPROC_OFFLINE) {
+		dev_err(dev, "can't change firmware while running\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	len = strcspn(fw_name, "\n");
+	if (!len) {
+		dev_err(dev, "can't provide empty string for firmware name\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	p = kstrndup(fw_name, len, GFP_KERNEL);
+	if (!p) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	kfree(rproc->firmware);
+	rproc->firmware = p;
+
+out:
+	mutex_unlock(&rproc->lock);
+	return ret;
+}
+EXPORT_SYMBOL(rproc_set_firmware);
 
 static int __init remoteproc_init(void)
 {

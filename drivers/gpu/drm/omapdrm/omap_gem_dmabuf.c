@@ -1,7 +1,5 @@
 /*
- * drivers/gpu/drm/omapdrm/omap_gem_dmabuf.c
- *
- * Copyright (C) 2011 Texas Instruments
+ * Copyright (C) 2011 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Rob Clark <rob.clark@linaro.org>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -77,7 +75,7 @@ static int omap_gem_dmabuf_begin_cpu_access(struct dma_buf *buffer,
 {
 	struct drm_gem_object *obj = buffer->priv;
 	struct page **pages;
-	if (omap_gem_flags(obj) & OMAP_BO_TILED) {
+	if (omap_gem_flags(obj) & OMAP_BO_TILED_MASK) {
 		/* TODO we would need to pin at least part of the buffer to
 		 * get de-tiled view.  For now just reject it.
 		 */
@@ -95,30 +93,25 @@ static int omap_gem_dmabuf_end_cpu_access(struct dma_buf *buffer,
 	return 0;
 }
 
-
-static void *omap_gem_dmabuf_kmap_atomic(struct dma_buf *buffer,
-		unsigned long page_num)
-{
-	struct drm_gem_object *obj = buffer->priv;
-	struct page **pages;
-	omap_gem_get_pages(obj, &pages, false);
-	omap_gem_cpu_sync_page(obj, page_num);
-	return kmap_atomic(pages[page_num]);
-}
-
-static void omap_gem_dmabuf_kunmap_atomic(struct dma_buf *buffer,
-		unsigned long page_num, void *addr)
-{
-	kunmap_atomic(addr);
-}
-
 static void *omap_gem_dmabuf_kmap(struct dma_buf *buffer,
 		unsigned long page_num)
 {
 	struct drm_gem_object *obj = buffer->priv;
 	struct page **pages;
+	dma_addr_t dma_addr;
 	omap_gem_get_pages(obj, &pages, false);
 	omap_gem_cpu_sync_page(obj, page_num);
+
+	/*
+	 * invalidate/flush the cache for this page deliberately.
+	 * XXX: revisit this, to find the proper place for invoking these calls.
+	 */
+	dma_addr = dma_map_page(obj->dev->dev, pages[page_num], 0, PAGE_SIZE,
+				DMA_BIDIRECTIONAL);
+	if (!dma_mapping_error(obj->dev->dev, dma_addr))
+		dma_unmap_page(obj->dev->dev, dma_addr, PAGE_SIZE,
+			       DMA_BIDIRECTIONAL);
+
 	return kmap(pages[page_num]);
 }
 
@@ -127,8 +120,19 @@ static void omap_gem_dmabuf_kunmap(struct dma_buf *buffer,
 {
 	struct drm_gem_object *obj = buffer->priv;
 	struct page **pages;
+	dma_addr_t dma_addr;
 	omap_gem_get_pages(obj, &pages, false);
 	kunmap(pages[page_num]);
+
+	/*
+	 * invalidate/flush the cache for this page deliberately.
+	 * XXX: revisit this, to find the proper place for invoking these calls.
+	 */
+	dma_addr = dma_map_page(obj->dev->dev, pages[page_num], 0, PAGE_SIZE,
+				DMA_BIDIRECTIONAL);
+	if (!dma_mapping_error(obj->dev->dev, dma_addr))
+		dma_unmap_page(obj->dev->dev, dma_addr, PAGE_SIZE,
+			       DMA_BIDIRECTIONAL);
 }
 
 static int omap_gem_dmabuf_mmap(struct dma_buf *buffer,
@@ -144,14 +148,12 @@ static int omap_gem_dmabuf_mmap(struct dma_buf *buffer,
 	return omap_gem_mmap_obj(obj, vma);
 }
 
-static struct dma_buf_ops omap_dmabuf_ops = {
+static const struct dma_buf_ops omap_dmabuf_ops = {
 	.map_dma_buf = omap_gem_map_dma_buf,
 	.unmap_dma_buf = omap_gem_unmap_dma_buf,
 	.release = drm_gem_dmabuf_release,
 	.begin_cpu_access = omap_gem_dmabuf_begin_cpu_access,
 	.end_cpu_access = omap_gem_dmabuf_end_cpu_access,
-	.map_atomic = omap_gem_dmabuf_kmap_atomic,
-	.unmap_atomic = omap_gem_dmabuf_kunmap_atomic,
 	.map = omap_gem_dmabuf_kmap,
 	.unmap = omap_gem_dmabuf_kunmap,
 	.mmap = omap_gem_dmabuf_mmap,
@@ -189,7 +191,7 @@ struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
 			 * Importing dmabuf exported from out own gem increases
 			 * refcount on gem itself instead of f_count of dmabuf.
 			 */
-			drm_gem_object_reference(obj);
+			drm_gem_object_get(obj);
 			return obj;
 		}
 	}

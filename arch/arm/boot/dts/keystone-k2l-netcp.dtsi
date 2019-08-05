@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Device Tree Source for Keystone 2 Lamarr Netcp driver
  *
- * Copyright 2015 Texas Instruments, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (C) 2015-2017 Texas Instruments Incorporated - http://www.ti.com/
  */
 
 qmss: qmss@2a40000 {
@@ -124,6 +121,70 @@ knav_dmas: knav_dmas@0 {
 			  <0x26189000 0x1000>;
 		reg-names = "global", "txchan", "rxchan",
 				"txsched", "rxflow";
+		ti,enable-all;
+	};
+};
+
+gbe_subsys: subsys@26200000 {
+	compatible = "syscon";
+	reg = <0x26200000 0x100>;
+};
+
+gbe_serdes0: phy@232a000 {
+	compatible		= "ti,keystone-serdes-gbe";
+	reg			= <0x0232a000 0x2000>;
+	status			= "disabled";
+	link-rate-kbps		= <1250000>;
+	num-lanes		= <2>;
+	#address-cells	= <1>;
+	#size-cells	= <0>;
+
+	serdes0_lane0: lane@0 {
+		#phy-cells	= <0>;
+		reg		= <0>;
+		status		= "ok";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
+	};
+	serdes0_lane1: lane@1 {
+		#phy-cells	= <0>;
+		reg		= <1>;
+		status		= "ok";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
+	};
+};
+
+gbe_serdes1: phy@2320000 {
+	compatible		= "ti,keystone-serdes-gbe";
+	reg			= <0x02320000 0x2000>;
+	status			= "disabled";
+	link-rate-kbps		= <1250000>;
+	num-lanes		= <2>;
+	#address-cells	= <1>;
+	#size-cells	= <0>;
+
+	serdes1_lane0: lane@0 {
+		#phy-cells	= <0>;
+		reg		= <0>;
+		status		= "disabled";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
+	};
+	serdes1_lane1: lane@1 {
+		#phy-cells	= <0>;
+		reg		= <1>;
+		status		= "disabled";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
 	};
 };
 
@@ -153,19 +214,21 @@ netcp: netcp@26000000 {
 		gbe@200000 { /* ETHSS */
 			label = "netcp-gbe";
 			compatible = "ti,netcp-gbe-5";
-			reg = <0x200000 0x900>, <0x220000 0x20000>;
-			/* enable-ale; */
+			syscon-subsys = <&gbe_subsys>;
+			reg = <0x200100 0x400>, <0x220000 0x20000>;
 			tx-queue = <896>;
 			tx-channel = "nettx";
 
 			interfaces {
 				gbe0: interface-0 {
-					slave-port = <0>;
+					phys		= <&serdes0_lane0>;
+					slave-port	= <0>;
 					link-interface	= <1>;
 					phy-handle	= <&ethphy0>;
 				};
 				gbe1: interface-1 {
-					slave-port = <1>;
+					phys		= <&serdes0_lane1>;
+					slave-port	= <1>;
 					link-interface	= <1>;
 					phy-handle	= <&ethphy1>;
 				};
@@ -173,10 +236,12 @@ netcp: netcp@26000000 {
 
 			secondary-slave-ports {
 				port-2 {
+					phys = <&serdes1_lane0>;
 					slave-port = <2>;
 					link-interface	= <2>;
 				};
 				port-3 {
+					phys = <&serdes1_lane1>;
 					slave-port = <3>;
 					link-interface	= <2>;
 				};
@@ -209,5 +274,25 @@ netcp: netcp@26000000 {
 			local-mac-address = [02 18 31 7e 3e 7f];
 			netcp-gbe = <&gbe1>;
 		};
+	};
+};
+
+sa_subsys: subsys@26080000 {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	compatible = "simple-bus";
+	ranges = <0 0x26080000 0x40000>;
+
+	sa_config: subsys@0 {
+		compatible = "syscon";
+		reg = <0x0 0x100>;
+	};
+
+	rng@24000 {
+		compatible = "ti,keystone-rng";
+		reg = <0x24000 0x1000>;
+		ti,syscon-sa-cfg = <&sa_config>;
+		clocks = <&clksa>;
+		clock-names = "fck";
 	};
 };

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /****************************************************************************/
 /*
  *  linux/fs/binfmt_flat.c
@@ -176,41 +177,32 @@ static int create_flat_tables(struct linux_binprm *bprm, unsigned long arg_start
 #define ENCRYPTED    0x20 /* bit 5 set: file is encrypted */
 #define RESERVED     0xC0 /* bit 6,7:   reserved */
 
-static int decompress_exec(
-	struct linux_binprm *bprm,
-	unsigned long offset,
-	char *dst,
-	long len,
-	int fd)
+static int decompress_exec(struct linux_binprm *bprm, loff_t fpos, char *dst,
+		long len, int fd)
 {
 	unsigned char *buf;
 	z_stream strm;
-	loff_t fpos;
 	int ret, retval;
 
-	pr_debug("decompress_exec(offset=%lx,buf=%p,len=%lx)\n", offset, dst, len);
+	pr_debug("decompress_exec(offset=%llx,buf=%p,len=%lx)\n", fpos, dst, len);
 
 	memset(&strm, 0, sizeof(strm));
 	strm.workspace = kmalloc(zlib_inflate_workspacesize(), GFP_KERNEL);
-	if (strm.workspace == NULL) {
-		pr_debug("no memory for decompress workspace\n");
+	if (!strm.workspace)
 		return -ENOMEM;
-	}
+
 	buf = kmalloc(LBUFSIZE, GFP_KERNEL);
-	if (buf == NULL) {
-		pr_debug("no memory for read buffer\n");
+	if (!buf) {
 		retval = -ENOMEM;
 		goto out_free;
 	}
 
 	/* Read in first chunk of data and parse gzip header. */
-	fpos = offset;
-	ret = kernel_read(bprm->file, offset, buf, LBUFSIZE);
+	ret = kernel_read(bprm->file, buf, LBUFSIZE, &fpos);
 
 	strm.next_in = buf;
 	strm.avail_in = ret;
 	strm.total_in = 0;
-	fpos += ret;
 
 	retval = -ENOEXEC;
 
@@ -276,7 +268,7 @@ static int decompress_exec(
 	}
 
 	while ((ret = zlib_inflate(&strm, Z_NO_FLUSH)) == Z_OK) {
-		ret = kernel_read(bprm->file, fpos, buf, LBUFSIZE);
+		ret = kernel_read(bprm->file, buf, LBUFSIZE, &fpos);
 		if (ret <= 0)
 			break;
 		len -= ret;
@@ -284,7 +276,6 @@ static int decompress_exec(
 		strm.next_in = buf;
 		strm.avail_in = ret;
 		strm.total_in = 0;
-		fpos += ret;
 	}
 
 	if (ret < 0) {
@@ -865,9 +856,14 @@ err:
 
 static int load_flat_shared_library(int id, struct lib_info *libs)
 {
+	/*
+	 * This is a fake bprm struct; only the members "buf", "file" and
+	 * "filename" are actually used.
+	 */
 	struct linux_binprm bprm;
 	int res;
 	char buf[16];
+	loff_t pos = 0;
 
 	memset(&bprm, 0, sizeof(bprm));
 
@@ -881,25 +877,11 @@ static int load_flat_shared_library(int id, struct lib_info *libs)
 	if (IS_ERR(bprm.file))
 		return res;
 
-	bprm.cred = prepare_exec_creds();
-	res = -ENOMEM;
-	if (!bprm.cred)
-		goto out;
+	res = kernel_read(bprm.file, bprm.buf, BINPRM_BUF_SIZE, &pos);
 
-	/* We don't really care about recalculating credentials at this point
-	 * as we're past the point of no return and are dealing with shared
-	 * libraries.
-	 */
-	bprm.cred_prepared = 1;
-
-	res = prepare_binprm(&bprm);
-
-	if (!res)
+	if (res >= 0)
 		res = load_flat_file(&bprm, libs, id, NULL);
 
-	abort_creds(bprm.cred);
-
-out:
 	allow_write_access(bprm.file);
 	fput(bprm.file);
 
@@ -1003,6 +985,7 @@ static int load_flat_binary(struct linux_binprm *bprm)
 	FLAT_PLAT_INIT(regs);
 #endif
 
+	finalize_exec(bprm);
 	pr_debug("start_thread(regs=0x%p, entry=0x%lx, start_stack=0x%lx)\n",
 		 regs, start_addr, current->mm->start_stack);
 	start_thread(regs, start_addr, current->mm->start_stack);

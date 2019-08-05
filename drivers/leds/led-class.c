@@ -21,6 +21,7 @@
 #include <linux/spinlock.h>
 #include <linux/timer.h>
 #include <uapi/linux/uleds.h>
+#include <linux/of.h>
 #include "leds.h"
 
 static struct class *leds_class;
@@ -215,6 +216,80 @@ static int led_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(leds_class_dev_pm_ops, led_suspend, led_resume);
 
+/* find OF node for the given led_cdev */
+static struct device_node *find_led_of_node(struct led_classdev *led_cdev)
+{
+	struct device *led_dev = led_cdev->dev;
+	struct device_node *child;
+
+	for_each_child_of_node(led_dev->parent->of_node, child) {
+		if (of_property_match_string(child, "label", led_cdev->name) == 0)
+			return child;
+	}
+
+	return NULL;
+}
+
+static int led_match_led_node(struct device *led_dev, const void *data)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(led_dev);
+	const struct device_node *target_node = data;
+	struct device_node *led_node;
+
+	led_node = find_led_of_node(led_cdev);
+	if (!led_node)
+		return 0;
+
+	of_node_put(led_node);
+
+	return led_node == target_node ? 1 : 0;
+}
+
+/**
+ * of_led_get() - request a LED device via the LED framework
+ * @np: device node to get the LED device from
+ *
+ * Returns the LED device parsed from the phandle specified in the "leds"
+ * property of a device tree node or a negative error-code on failure.
+ */
+struct led_classdev *of_led_get(struct device_node *np)
+{
+	struct device *led_dev;
+	struct led_classdev *led_cdev;
+	struct device_node *led_node;
+
+	led_node = of_parse_phandle(np, "leds", 0);
+	if (!led_node)
+		return ERR_PTR(-ENODEV);
+
+	led_dev = class_find_device(leds_class, NULL, led_node,
+		led_match_led_node);
+	if (!led_dev) {
+		of_node_put(led_node);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
+
+	of_node_put(led_node);
+
+	led_cdev = dev_get_drvdata(led_dev);
+
+	if (!try_module_get(led_cdev->dev->parent->driver->owner))
+		return ERR_PTR(-ENODEV);
+
+	return led_cdev;
+}
+EXPORT_SYMBOL_GPL(of_led_get);
+
+/**
+ * led_put() - release a LED device
+ * @led_cdev: LED device
+ */
+void led_put(struct led_classdev *led_cdev)
+{
+	module_put(led_cdev->dev->parent->driver->owner);
+}
+EXPORT_SYMBOL_GPL(led_put);
+
 static int match_name(struct device *dev, const void *data)
 {
 	if (!dev_name(dev))
@@ -260,10 +335,14 @@ int of_led_classdev_register(struct device *parent, struct device_node *np,
 	if (ret < 0)
 		return ret;
 
+	mutex_init(&led_cdev->led_access);
+	mutex_lock(&led_cdev->led_access);
 	led_cdev->dev = device_create_with_groups(leds_class, parent, 0,
 				led_cdev, led_cdev->groups, "%s", name);
-	if (IS_ERR(led_cdev->dev))
+	if (IS_ERR(led_cdev->dev)) {
+		mutex_unlock(&led_cdev->led_access);
 		return PTR_ERR(led_cdev->dev);
+	}
 	led_cdev->dev->of_node = np;
 
 	if (ret)
@@ -274,6 +353,7 @@ int of_led_classdev_register(struct device *parent, struct device_node *np,
 		ret = led_add_brightness_hw_changed(led_cdev);
 		if (ret) {
 			device_unregister(led_cdev->dev);
+			mutex_unlock(&led_cdev->led_access);
 			return ret;
 		}
 	}
@@ -285,7 +365,6 @@ int of_led_classdev_register(struct device *parent, struct device_node *np,
 #ifdef CONFIG_LEDS_BRIGHTNESS_HW_CHANGED
 	led_cdev->brightness_hw_changed = -1;
 #endif
-	mutex_init(&led_cdev->led_access);
 	/* add to the list of leds */
 	down_write(&leds_list_lock);
 	list_add_tail(&led_cdev->node, &leds_list);
@@ -301,6 +380,8 @@ int of_led_classdev_register(struct device *parent, struct device_node *np,
 #ifdef CONFIG_LEDS_TRIGGERS
 	led_trigger_set_default(led_cdev);
 #endif
+
+	mutex_unlock(&led_cdev->led_access);
 
 	dev_dbg(parent, "Registered led device: %s\n",
 			led_cdev->name);

@@ -39,6 +39,7 @@ extern struct dev_pm_domain omap_device_fail_pm_domain;
 
 /* omap_device.flags values */
 #define OMAP_DEVICE_SUSPENDED		BIT(0)
+#define OMAP_DEVICE_HAS_REIDLE_HWMODS	BIT(1)
 
 /**
  * struct omap_device - omap_device wrapper for platform_devices
@@ -74,10 +75,6 @@ int omap_device_idle(struct platform_device *pdev);
 struct platform_device *omap_device_build(const char *pdev_name, int pdev_id,
 					  struct omap_hwmod *oh, void *pdata,
 					  int pdata_len);
-
-struct platform_device *omap_device_build_ss(const char *pdev_name, int pdev_id,
-					 struct omap_hwmod **oh, int oh_cnt,
-					 void *pdata, int pdata_len);
 
 struct omap_device *omap_device_alloc(struct platform_device *pdev,
 				      struct omap_hwmod **ohs, int oh_cnt);

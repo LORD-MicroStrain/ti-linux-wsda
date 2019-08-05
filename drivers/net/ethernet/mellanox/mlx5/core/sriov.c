@@ -32,6 +32,7 @@
 
 #include <linux/pci.h>
 #include <linux/mlx5/driver.h>
+#include <linux/mlx5/vport.h>
 #include "mlx5_core.h"
 #include "eswitch.h"
 
@@ -40,6 +41,38 @@ bool mlx5_sriov_is_enabled(struct mlx5_core_dev *dev)
 	struct mlx5_core_sriov *sriov = &dev->priv.sriov;
 
 	return !!sriov->num_vfs;
+}
+
+static int sriov_restore_guids(struct mlx5_core_dev *dev, int vf)
+{
+	struct mlx5_core_sriov *sriov = &dev->priv.sriov;
+	struct mlx5_hca_vport_context *in;
+	int err = 0;
+
+	/* Restore sriov guid and policy settings */
+	if (sriov->vfs_ctx[vf].node_guid ||
+	    sriov->vfs_ctx[vf].port_guid ||
+	    sriov->vfs_ctx[vf].policy != MLX5_POLICY_INVALID) {
+		in = kzalloc(sizeof(*in), GFP_KERNEL);
+		if (!in)
+			return -ENOMEM;
+
+		in->node_guid = sriov->vfs_ctx[vf].node_guid;
+		in->port_guid = sriov->vfs_ctx[vf].port_guid;
+		in->policy = sriov->vfs_ctx[vf].policy;
+		in->field_select =
+			!!(in->port_guid) * MLX5_HCA_VPORT_SEL_PORT_GUID |
+			!!(in->node_guid) * MLX5_HCA_VPORT_SEL_NODE_GUID |
+			!!(in->policy) * MLX5_HCA_VPORT_SEL_STATE_POLICY;
+
+		err = mlx5_core_modify_hca_vport_context(dev, 1, 1, vf + 1, in);
+		if (err)
+			mlx5_core_warn(dev, "modify vport context failed, unable to restore VF %d settings\n", vf);
+
+		kfree(in);
+	}
+
+	return err;
 }
 
 static int mlx5_device_enable_sriov(struct mlx5_core_dev *dev, int num_vfs)
@@ -55,6 +88,9 @@ static int mlx5_device_enable_sriov(struct mlx5_core_dev *dev, int num_vfs)
 		return -EBUSY;
 	}
 
+	if (!MLX5_ESWITCH_MANAGER(dev))
+		goto enable_vfs_hca;
+
 	err = mlx5_eswitch_enable_sriov(dev->priv.eswitch, num_vfs, SRIOV_LEGACY);
 	if (err) {
 		mlx5_core_warn(dev,
@@ -62,6 +98,7 @@ static int mlx5_device_enable_sriov(struct mlx5_core_dev *dev, int num_vfs)
 		return err;
 	}
 
+enable_vfs_hca:
 	for (vf = 0; vf < num_vfs; vf++) {
 		err = mlx5_core_enable_hca(dev, vf + 1);
 		if (err) {
@@ -70,6 +107,15 @@ static int mlx5_device_enable_sriov(struct mlx5_core_dev *dev, int num_vfs)
 		}
 		sriov->vfs_ctx[vf].enabled = 1;
 		sriov->enabled_vfs++;
+		if (MLX5_CAP_GEN(dev, port_type) == MLX5_CAP_PORT_TYPE_IB) {
+			err = sriov_restore_guids(dev, vf);
+			if (err) {
+				mlx5_core_warn(dev,
+					       "failed to restore VF %d settings, err %d\n",
+					       vf, err);
+				continue;
+			}
+		}
 		mlx5_core_dbg(dev, "successfully enabled VF* %d\n", vf);
 	}
 
@@ -98,7 +144,8 @@ static void mlx5_device_disable_sriov(struct mlx5_core_dev *dev)
 	}
 
 out:
-	mlx5_eswitch_disable_sriov(dev->priv.eswitch);
+	if (MLX5_ESWITCH_MANAGER(dev))
+		mlx5_eswitch_disable_sriov(dev->priv.eswitch);
 
 	if (mlx5_wait_for_vf_pages(dev))
 		mlx5_core_warn(dev, "timeout reclaiming VFs pages\n");

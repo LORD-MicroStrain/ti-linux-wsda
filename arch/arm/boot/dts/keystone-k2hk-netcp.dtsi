@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Device Tree Source for Keystone 2 Hawking Netcp driver
  *
- * Copyright 2015 Texas Instruments, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Copyright (C) 2015-2017 Texas Instruments Incorporated - http://www.ti.com/
  */
 
 qmss: qmss@2a40000 {
@@ -142,6 +139,59 @@ knav_dmas: knav_dmas@0 {
 			  <0x2005000 0x400>;
 		reg-names = "global", "txchan", "rxchan",
 				"txsched", "rxflow";
+		ti,enable-all;
+	};
+};
+
+gbe_subsys: subsys@2090000 {
+	compatible = "syscon";
+	reg = <0x02090000 0x100>;
+};
+
+gbe_serdes: phy@232a000 {
+	compatible		= "ti,keystone-serdes-gbe";
+	reg			= <0x0232a000 0x2000>;
+	status			= "disabled";
+	link-rate-kbps		= <1250000>;
+	num-lanes		= <4>;
+	#address-cells	= <1>;
+	#size-cells	= <0>;
+
+	serdes_lane0: lane@0 {
+		#phy-cells	= <0>;
+		reg		= <0>;
+		status		= "ok";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
+	};
+	serdes_lane1: lane@1 {
+		#phy-cells	= <0>;
+		reg		= <1>;
+		status		= "ok";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
+	};
+	serdes_lane2: lane@2 {
+		#phy-cells	= <0>;
+		reg		= <2>;
+		status		= "disabled";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
+	};
+	serdes_lane3: lane@3 {
+		#phy-cells	= <0>;
+		reg		= <3>;
+		status		= "disabled";
+		control-rate	= <2>;
+		rx-start	= <7 5>;
+		rx-force	= <1 1>;
+		tx-coeff	= <0 0 0 12 4>;
 	};
 };
 
@@ -173,18 +223,20 @@ netcp: netcp@2000000 {
 			#size-cells = <1>;
 			label = "netcp-gbe";
 			compatible = "ti,netcp-gbe";
-			reg = <0x90000 0x300>, <0x90400 0x400>, <0x90800 0x700>;
-			/* enable-ale; */
+			syscon-subsys = <&gbe_subsys>;
+			reg = <0x90100 0x200>, <0x90400 0x200>, <0x90800 0x700>;
 			tx-queue = <648>;
 			tx-channel = "nettx";
 
 			interfaces {
 				gbe0: interface-0 {
+					phys = <&serdes_lane0>;
 					slave-port = <0>;
 					link-interface = <1>;
 					phy-handle = <&ethphy0>;
 				};
 				gbe1: interface-1 {
+					phys = <&serdes_lane1>;
 					slave-port = <1>;
 					link-interface = <1>;
 					phy-handle = <&ethphy1>;
@@ -193,10 +245,12 @@ netcp: netcp@2000000 {
 
 			secondary-slave-ports {
 				port-2 {
+					phys = <&serdes_lane2>;
 					slave-port = <2>;
 					link-interface	= <2>;
 				};
 				port-3 {
+					phys = <&serdes_lane3>;
 					slave-port = <3>;
 					link-interface	= <2>;
 				};
@@ -229,5 +283,25 @@ netcp: netcp@2000000 {
 			local-mac-address = [02 18 31 7e 3e 6f];
 			netcp-gbe = <&gbe1>;
 		};
+	};
+};
+
+sa_subsys: subsys@20c0000 {
+	compatible = "simple-bus";
+	#address-cells = <1>;
+	#size-cells = <1>;
+	ranges = <0 0x20c0000 0x40000>;
+
+	sa_config: subsys@0 {
+		compatible = "syscon";
+		reg = <0x0 0x100>;
+	};
+
+	rng@24000 {
+		compatible = "ti,keystone-rng";
+		reg = <0x24000 0x1000>;
+		ti,syscon-sa-cfg = <&sa_config>;
+		clocks = <&clksa>;
+		clock-names = "fck";
 	};
 };

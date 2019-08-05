@@ -277,7 +277,7 @@ static int zx_pinctrl_build_state(struct platform_device *pdev)
 
 	/* Every single pin composes a group */
 	ngroups = info->npins;
-	groups = devm_kzalloc(&pdev->dev, ngroups * sizeof(*groups),
+	groups = devm_kcalloc(&pdev->dev, ngroups, sizeof(*groups),
 			      GFP_KERNEL);
 	if (!groups)
 		return -ENOMEM;
@@ -295,8 +295,7 @@ static int zx_pinctrl_build_state(struct platform_device *pdev)
 	pctldev->num_groups = ngroups;
 
 	/* Build function list from pin mux functions */
-	functions = devm_kzalloc(&pdev->dev, info->npins * sizeof(*functions),
-				 GFP_KERNEL);
+	functions = kcalloc(info->npins, sizeof(*functions), GFP_KERNEL);
 	if (!functions)
 		return -ENOMEM;
 
@@ -363,12 +362,14 @@ static int zx_pinctrl_build_state(struct platform_device *pdev)
 
 			func = functions + j;
 			if (!func->group_names) {
-				func->group_names = devm_kzalloc(&pdev->dev,
-						func->num_group_names *
+				func->group_names = devm_kcalloc(&pdev->dev,
+						func->num_group_names,
 						sizeof(*func->group_names),
 						GFP_KERNEL);
-				if (!func->group_names)
+				if (!func->group_names) {
+					kfree(functions);
 					return -ENOMEM;
+				}
 			}
 
 			group = func->group_names;
@@ -410,6 +411,7 @@ int zx_pinctrl_init(struct platform_device *pdev,
 	}
 
 	zpctl->aux_base = of_iomap(np, 0);
+	of_node_put(np);
 	if (!zpctl->aux_base)
 		return -ENOMEM;
 

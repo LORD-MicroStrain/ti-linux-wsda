@@ -438,7 +438,8 @@ int iwl_mvm_mac_ctxt_init(struct iwl_mvm *mvm, struct ieee80211_vif *vif)
 	}
 
 	/* Allocate the CAB queue for softAP and GO interfaces */
-	if (vif->type == NL80211_IFTYPE_AP) {
+	if (vif->type == NL80211_IFTYPE_AP ||
+	    vif->type == NL80211_IFTYPE_ADHOC) {
 		/*
 		 * For TVQM this will be overwritten later with the FW assigned
 		 * queue value (when queue is enabled).
@@ -779,6 +780,10 @@ static int iwl_mvm_mac_ctxt_cmd_sta(struct iwl_mvm *mvm,
 	if (vif->probe_req_reg && vif->bss_conf.assoc && vif->p2p)
 		cmd.filter_flags |= cpu_to_le32(MAC_FILTER_IN_PROBE_REQUEST);
 
+	if (vif->bss_conf.assoc && vif->bss_conf.he_support &&
+	    !iwlwifi_mod_params.disable_11ax)
+		cmd.filter_flags |= cpu_to_le32(MAC_FILTER_IN_11AX);
+
 	return iwl_mvm_mac_ctxt_send_cmd(mvm, &cmd);
 }
 
@@ -787,7 +792,7 @@ static int iwl_mvm_mac_ctxt_cmd_listener(struct iwl_mvm *mvm,
 					 u32 action)
 {
 	struct iwl_mac_ctx_cmd cmd = {};
-	u32 tfd_queue_msk = 0;
+	u32 tfd_queue_msk = BIT(mvm->snif_queue);
 	int ret;
 
 	WARN_ON(vif->type != NL80211_IFTYPE_MONITOR);
@@ -923,6 +928,19 @@ static u32 iwl_mvm_find_ie_offset(u8 *beacon, u8 eid, u32 frame_size)
 	return ie - beacon;
 }
 
+static u8 iwl_mvm_mac_ctxt_get_lowest_rate(struct ieee80211_tx_info *info,
+					   struct ieee80211_vif *vif)
+{
+	u8 rate;
+
+	if (info->band == NL80211_BAND_5GHZ || vif->p2p)
+		rate = IWL_FIRST_OFDM_RATE;
+	else
+		rate = IWL_FIRST_CCK_RATE;
+
+	return rate;
+}
+
 static void iwl_mvm_mac_ctxt_set_tx(struct iwl_mvm *mvm,
 				    struct ieee80211_vif *vif,
 				    struct sk_buff *beacon,
@@ -930,7 +948,8 @@ static void iwl_mvm_mac_ctxt_set_tx(struct iwl_mvm *mvm,
 {
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 	struct ieee80211_tx_info *info;
-	u32 rate, tx_flags;
+	u8 rate;
+	u32 tx_flags;
 
 	info = IEEE80211_SKB_CB(beacon);
 
@@ -955,14 +974,12 @@ static void iwl_mvm_mac_ctxt_set_tx(struct iwl_mvm *mvm,
 		cpu_to_le32(BIT(mvm->mgmt_last_antenna_idx) <<
 			    RATE_MCS_ANT_POS);
 
-	if (info->band == NL80211_BAND_5GHZ || vif->p2p) {
-		rate = IWL_FIRST_OFDM_RATE;
-	} else {
-		rate = IWL_FIRST_CCK_RATE;
-		tx->rate_n_flags |= cpu_to_le32(RATE_MCS_CCK_MSK);
-	}
+	rate = iwl_mvm_mac_ctxt_get_lowest_rate(info, vif);
 
 	tx->rate_n_flags |= cpu_to_le32(iwl_mvm_mac80211_idx_to_hwrate(rate));
+	if (rate == IWL_FIRST_CCK_RATE)
+		tx->rate_n_flags |= cpu_to_le32(RATE_MCS_CCK_MSK);
+
 }
 
 static int iwl_mvm_mac_ctxt_send_beacon_cmd(struct iwl_mvm *mvm,
@@ -1033,19 +1050,27 @@ static int iwl_mvm_mac_ctxt_send_beacon_v7(struct iwl_mvm *mvm,
 						sizeof(beacon_cmd));
 }
 
-static int iwl_mvm_mac_ctxt_send_beacon_v8(struct iwl_mvm *mvm,
+static int iwl_mvm_mac_ctxt_send_beacon_v9(struct iwl_mvm *mvm,
 					   struct ieee80211_vif *vif,
 					   struct sk_buff *beacon)
 {
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(beacon);
 	struct iwl_mac_beacon_cmd beacon_cmd = {};
+	u8 rate = iwl_mvm_mac_ctxt_get_lowest_rate(info, vif);
+	u16 flags;
 
+	flags = iwl_mvm_mac80211_idx_to_hwrate(rate);
+
+	if (rate == IWL_FIRST_CCK_RATE)
+		flags |= IWL_MAC_BEACON_CCK;
+
+	beacon_cmd.flags = cpu_to_le16(flags);
 	beacon_cmd.byte_cnt = cpu_to_le16((u16)beacon->len);
 	beacon_cmd.template_id = cpu_to_le32((u32)mvmvif->id);
 
 	if (vif->type == NL80211_IFTYPE_AP)
-		iwl_mvm_mac_ctxt_set_tim(mvm,
-					 &beacon_cmd.tim_idx,
+		iwl_mvm_mac_ctxt_set_tim(mvm, &beacon_cmd.tim_idx,
 					 &beacon_cmd.tim_size,
 					 beacon->data, beacon->len);
 
@@ -1073,10 +1098,11 @@ static int iwl_mvm_mac_ctxt_send_beacon(struct iwl_mvm *mvm,
 			 IWL_UCODE_TLV_CAPA_CSA_AND_TBTT_OFFLOAD))
 		return iwl_mvm_mac_ctxt_send_beacon_v6(mvm, vif, beacon);
 
-	if (!iwl_mvm_has_new_tx_api(mvm))
-		return iwl_mvm_mac_ctxt_send_beacon_v7(mvm, vif, beacon);
+	if (fw_has_api(&mvm->fw->ucode_capa,
+		       IWL_UCODE_TLV_API_NEW_BEACON_TEMPLATE))
+		return iwl_mvm_mac_ctxt_send_beacon_v9(mvm, vif, beacon);
 
-	return iwl_mvm_mac_ctxt_send_beacon_v8(mvm, vif, beacon);
+	return iwl_mvm_mac_ctxt_send_beacon_v7(mvm, vif, beacon);
 }
 
 /* The beacon template for the AP/GO/IBSS has changed and needs update */

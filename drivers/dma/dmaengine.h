@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * The contents of this file are private to DMA engine drivers, and is not
  * part of the API to be used by DMA engine users.
@@ -76,6 +77,7 @@ static inline enum dma_status dma_cookie_status(struct dma_chan *chan,
 		state->last = complete;
 		state->used = used;
 		state->residue = 0;
+		state->in_flight_bytes = 0;
 	}
 	return dma_async_is_complete(cookie, complete, used);
 }
@@ -84,6 +86,13 @@ static inline void dma_set_residue(struct dma_tx_state *state, u32 residue)
 {
 	if (state)
 		state->residue = residue;
+}
+
+static inline void dma_set_in_flight_bytes(struct dma_tx_state *state,
+					   u32 in_flight_bytes)
+{
+	if (state)
+		state->in_flight_bytes = in_flight_bytes;
 }
 
 struct dmaengine_desc_callback {

@@ -33,6 +33,8 @@
 #define SGMII_LINK_MAC_MAC_FORCED	2
 #define SGMII_LINK_MAC_FIBER		3
 #define SGMII_LINK_MAC_PHY_NO_MDIO	4
+#define RGMII_LINK_MAC_PHY		5
+#define RGMII_LINK_MAC_PHY_NO_MDIO	7
 #define XGMII_LINK_MAC_PHY		10
 #define XGMII_LINK_MAC_MAC_FORCED	11
 
@@ -212,6 +214,7 @@ struct netcp_module {
 	int	(*add_vid)(void *intf_priv, int vid);
 	int	(*del_vid)(void *intf_priv, int vid);
 	int	(*ioctl)(void *intf_priv, struct ifreq *req, int cmd);
+	int	(*set_rx_mode)(void *intf_priv, bool promisc);
 
 	/* used internally */
 	struct list_head	module_list;
@@ -244,7 +247,7 @@ void *netcp_device_find_module(struct netcp_device *netcp_device,
 /* SGMII functions */
 int netcp_sgmii_reset(void __iomem *sgmii_ofs, int port);
 bool netcp_sgmii_rtreset(void __iomem *sgmii_ofs, int port, bool set);
-int netcp_sgmii_get_port_link(void __iomem *sgmii_ofs, int port);
+bool netcp_sgmii_get_port_link(void __iomem *sgmii_ofs, int port);
 int netcp_sgmii_config(void __iomem *sgmii_ofs, int port, u32 interface);
 
 /* XGBE SERDES init functions */

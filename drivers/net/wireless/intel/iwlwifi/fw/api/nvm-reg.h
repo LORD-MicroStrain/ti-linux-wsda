@@ -8,6 +8,7 @@
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
+ * Copyright (C) 2018 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -30,6 +31,7 @@
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
  * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
+ * Copyright (C) 2018 Intel Corporation
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -108,6 +110,7 @@ enum iwl_nvm_access_target {
  * @NVM_SECTION_TYPE_REGULATORY: regulatory section
  * @NVM_SECTION_TYPE_CALIBRATION: calibration section
  * @NVM_SECTION_TYPE_PRODUCTION: production section
+ * @NVM_SECTION_TYPE_REGULATORY_SDP: regulatory section used by 3168 series
  * @NVM_SECTION_TYPE_MAC_OVERRIDE: MAC override section
  * @NVM_SECTION_TYPE_PHY_SKU: PHY SKU section
  * @NVM_MAX_NUM_SECTIONS: number of sections
@@ -117,6 +120,7 @@ enum iwl_nvm_section_type {
 	NVM_SECTION_TYPE_REGULATORY = 3,
 	NVM_SECTION_TYPE_CALIBRATION = 4,
 	NVM_SECTION_TYPE_PRODUCTION = 5,
+	NVM_SECTION_TYPE_REGULATORY_SDP = 8,
 	NVM_SECTION_TYPE_MAC_OVERRIDE = 11,
 	NVM_SECTION_TYPE_PHY_SKU = 12,
 	NVM_MAX_NUM_SECTIONS = 13,
@@ -186,22 +190,38 @@ struct iwl_nvm_get_info_general {
 } __packed; /* GRP_REGULATORY_NVM_GET_INFO_GENERAL_S_VER_1 */
 
 /**
+ * enum iwl_nvm_mac_sku_flags - flags in &iwl_nvm_get_info_sku
+ * @NVM_MAC_SKU_FLAGS_BAND_2_4_ENABLED: true if 2.4 band enabled
+ * @NVM_MAC_SKU_FLAGS_BAND_5_2_ENABLED: true if 5.2 band enabled
+ * @NVM_MAC_SKU_FLAGS_802_11N_ENABLED: true if 11n enabled
+ * @NVM_MAC_SKU_FLAGS_802_11AC_ENABLED: true if 11ac enabled
+ * @NVM_MAC_SKU_FLAGS_MIMO_DISABLED: true if MIMO disabled
+ * @NVM_MAC_SKU_FLAGS_WAPI_ENABLED: true if WAPI enabled
+ * @NVM_MAC_SKU_FLAGS_REG_CHECK_ENABLED: true if regulatory checker enabled
+ * @NVM_MAC_SKU_FLAGS_API_LOCK_ENABLED: true if API lock enabled
+ */
+enum iwl_nvm_mac_sku_flags {
+	NVM_MAC_SKU_FLAGS_BAND_2_4_ENABLED	= BIT(0),
+	NVM_MAC_SKU_FLAGS_BAND_5_2_ENABLED	= BIT(1),
+	NVM_MAC_SKU_FLAGS_802_11N_ENABLED	= BIT(2),
+	NVM_MAC_SKU_FLAGS_802_11AC_ENABLED	= BIT(3),
+	/**
+	 * @NVM_MAC_SKU_FLAGS_802_11AX_ENABLED: true if 11ax enabled
+	 */
+	NVM_MAC_SKU_FLAGS_802_11AX_ENABLED	= BIT(4),
+	NVM_MAC_SKU_FLAGS_MIMO_DISABLED		= BIT(5),
+	NVM_MAC_SKU_FLAGS_WAPI_ENABLED		= BIT(8),
+	NVM_MAC_SKU_FLAGS_REG_CHECK_ENABLED	= BIT(14),
+	NVM_MAC_SKU_FLAGS_API_LOCK_ENABLED	= BIT(15),
+};
+
+/**
  * struct iwl_nvm_get_info_sku - mac information
- * @enable_24g: band 2.4G enabled
- * @enable_5g: band 5G enabled
- * @enable_11n: 11n enabled
- * @enable_11ac: 11ac enabled
- * @mimo_disable: MIMO enabled
- * @ext_crypto: Extended crypto enabled
+ * @mac_sku_flags: flags for SKU, see &enum iwl_nvm_mac_sku_flags
  */
 struct iwl_nvm_get_info_sku {
-	__le32 enable_24g;
-	__le32 enable_5g;
-	__le32 enable_11n;
-	__le32 enable_11ac;
-	__le32 mimo_disable;
-	__le32 ext_crypto;
-} __packed; /* GRP_REGULATORY_NVM_GET_INFO_MAC_SKU_SECTION_S_VER_1 */
+	__le32 mac_sku_flags;
+} __packed; /* REGULATORY_NVM_GET_INFO_MAC_SKU_SECTION_S_VER_2 */
 
 /**
  * struct iwl_nvm_get_info_phy - phy information
@@ -239,7 +259,7 @@ struct iwl_nvm_get_info_rsp {
 	struct iwl_nvm_get_info_sku mac_sku;
 	struct iwl_nvm_get_info_phy phy_sku;
 	struct iwl_nvm_get_info_regulatory regulatory;
-} __packed; /* GRP_REGULATORY_NVM_GET_INFO_CMD_RSP_S_VER_1 */
+} __packed; /* GRP_REGULATORY_NVM_GET_INFO_CMD_RSP_S_VER_2 */
 
 /**
  * struct iwl_nvm_access_complete_cmd - NVM_ACCESS commands are completed
@@ -309,6 +329,17 @@ struct iwl_mcc_update_resp_v1  {
 } __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_1 */
 
 /**
+ * enum iwl_geo_information - geographic information.
+ * @GEO_NO_INFO: no special info for this geo profile.
+ * @GEO_WMM_ETSI_5GHZ_INFO: this geo profile limits the WMM params
+ *	for the 5 GHz band.
+ */
+enum iwl_geo_information {
+	GEO_NO_INFO =			0,
+	GEO_WMM_ETSI_5GHZ_INFO =	BIT(0),
+};
+
+/**
  * struct iwl_mcc_update_resp - response to MCC_UPDATE_CMD.
  * Contains the new channel control profile map, if changed, and the new MCC
  * (mobile country code).
@@ -318,7 +349,8 @@ struct iwl_mcc_update_resp_v1  {
  * @cap: capabilities for all channels which matches the MCC
  * @source_id: the MCC source, see iwl_mcc_source
  * @time: time elapsed from the MCC test start (in 30 seconds TU)
- * @reserved: reserved.
+ * @geo_info: geographic specific profile information
+ *	see &enum iwl_geo_information.
  * @n_channels: number of channels in @channels_data (may be 14, 39, 50 or 51
  *		channels, depending on platform)
  * @channels: channel control data map, DWORD for each channel. Only the first
@@ -330,10 +362,10 @@ struct iwl_mcc_update_resp {
 	u8 cap;
 	u8 source_id;
 	__le16 time;
-	__le16 reserved;
+	__le16 geo_info;
 	__le32 n_channels;
 	__le32 channels[0];
-} __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_2 */
+} __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_3 */
 
 /**
  * struct iwl_mcc_chub_notif - chub notifies of mcc change

@@ -112,6 +112,6 @@ struct can_pstats {
 /* function prototypes for the CAN networklayer procfs (proc.c) */
 void can_init_proc(struct net *net);
 void can_remove_proc(struct net *net);
-void can_stat_update(unsigned long data);
+void can_stat_update(struct timer_list *t);
 
 #endif /* AF_CAN_H */

@@ -34,31 +34,32 @@
 #include <asm/x86_init.h>
 #include <asm/reboot.h>
 #include <asm/cache.h>
+#include <asm/nospec-branch.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/nmi.h>
 
 struct nmi_desc {
-	spinlock_t lock;
+	raw_spinlock_t lock;
 	struct list_head head;
 };
 
 static struct nmi_desc nmi_desc[NMI_MAX] = 
 {
 	{
-		.lock = __SPIN_LOCK_UNLOCKED(&nmi_desc[0].lock),
+		.lock = __RAW_SPIN_LOCK_UNLOCKED(&nmi_desc[0].lock),
 		.head = LIST_HEAD_INIT(nmi_desc[0].head),
 	},
 	{
-		.lock = __SPIN_LOCK_UNLOCKED(&nmi_desc[1].lock),
+		.lock = __RAW_SPIN_LOCK_UNLOCKED(&nmi_desc[1].lock),
 		.head = LIST_HEAD_INIT(nmi_desc[1].head),
 	},
 	{
-		.lock = __SPIN_LOCK_UNLOCKED(&nmi_desc[2].lock),
+		.lock = __RAW_SPIN_LOCK_UNLOCKED(&nmi_desc[2].lock),
 		.head = LIST_HEAD_INIT(nmi_desc[2].head),
 	},
 	{
-		.lock = __SPIN_LOCK_UNLOCKED(&nmi_desc[3].lock),
+		.lock = __RAW_SPIN_LOCK_UNLOCKED(&nmi_desc[3].lock),
 		.head = LIST_HEAD_INIT(nmi_desc[3].head),
 	},
 
@@ -105,7 +106,7 @@ static void nmi_max_handler(struct irq_work *w)
 {
 	struct nmiaction *a = container_of(w, struct nmiaction, irq_work);
 	int remainder_ns, decimal_msecs;
-	u64 whole_msecs = ACCESS_ONCE(a->max_duration);
+	u64 whole_msecs = READ_ONCE(a->max_duration);
 
 	remainder_ns = do_div(whole_msecs, (1000 * 1000));
 	decimal_msecs = remainder_ns / 1000;
@@ -163,7 +164,7 @@ int __register_nmi_handler(unsigned int type, struct nmiaction *action)
 
 	init_irq_work(&action->irq_work, nmi_max_handler);
 
-	spin_lock_irqsave(&desc->lock, flags);
+	raw_spin_lock_irqsave(&desc->lock, flags);
 
 	/*
 	 * Indicate if there are multiple registrations on the
@@ -181,7 +182,7 @@ int __register_nmi_handler(unsigned int type, struct nmiaction *action)
 	else
 		list_add_tail_rcu(&action->list, &desc->head);
 	
-	spin_unlock_irqrestore(&desc->lock, flags);
+	raw_spin_unlock_irqrestore(&desc->lock, flags);
 	return 0;
 }
 EXPORT_SYMBOL(__register_nmi_handler);
@@ -192,7 +193,7 @@ void unregister_nmi_handler(unsigned int type, const char *name)
 	struct nmiaction *n;
 	unsigned long flags;
 
-	spin_lock_irqsave(&desc->lock, flags);
+	raw_spin_lock_irqsave(&desc->lock, flags);
 
 	list_for_each_entry_rcu(n, &desc->head, list) {
 		/*
@@ -207,7 +208,7 @@ void unregister_nmi_handler(unsigned int type, const char *name)
 		}
 	}
 
-	spin_unlock_irqrestore(&desc->lock, flags);
+	raw_spin_unlock_irqrestore(&desc->lock, flags);
 	synchronize_rcu();
 }
 EXPORT_SYMBOL_GPL(unregister_nmi_handler);
@@ -533,6 +534,9 @@ nmi_restart:
 		write_cr2(this_cpu_read(nmi_cr2));
 	if (this_cpu_dec_return(nmi_state))
 		goto nmi_restart;
+
+	if (user_mode(regs))
+		mds_user_clear_cpu_buffers();
 }
 NOKPROBE_SYMBOL(do_nmi);
 

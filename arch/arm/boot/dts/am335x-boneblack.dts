@@ -20,6 +20,57 @@
 	compatible = "ti,am335x-bone-black", "ti,am335x-bone", "ti,am33xx";
 };
 
+&am33xx_pinmux {
+	dmtimer_ptp0_pins: dmtimer_ptp0_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x890, PIN_INPUT | MUX_MODE2);
+		>;
+	};
+	dmtimer_ptp1_pins: dmtimer_ptp1_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x89C, PIN_INPUT | MUX_MODE2);
+		>;
+	};
+	dmtimer_ptp2_pins: dmtimer_ptp2_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x898, PIN_INPUT | MUX_MODE2);
+		>;
+	};
+	dmtimer_ptp3_pins: dmtimer_ptp3_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x894, PIN_INPUT | MUX_MODE2);
+		>;
+	};
+
+};
+
+/ {
+	dmtimer_ptp0: dmtimer_ptp0 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer4>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp0_pins>;
+	};
+	dmtimer_ptp1: dmtimer_ptp1 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer5>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp1_pins>;
+	};
+	dmtimer_ptp2: dmtimer_ptp2 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer6>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp2_pins>;
+	};
+	dmtimer_ptp3: dmtimer_ptp3 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer7>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp3_pins>;
+	};
+};
+
 &cpu0_opp_table {
 	/*
 	 * All PG 2.0 silicon may not support 1GHz but some of the early

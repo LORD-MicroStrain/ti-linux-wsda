@@ -23,22 +23,22 @@
 &am33xx_pinmux {
 	dmtimer_ptp0_pins: dmtimer_ptp0_pins {
 		pinctrl-single,pins = <
-			AM33XX_IOPAD(0x890, PIN_INPUT | MUX_MODE2);
+			AM33XX_IOPAD(0x890, PIN_INPUT | MUX_MODE2)
 		>;
 	};
 	dmtimer_ptp1_pins: dmtimer_ptp1_pins {
 		pinctrl-single,pins = <
-			AM33XX_IOPAD(0x89C, PIN_INPUT | MUX_MODE2);
+			AM33XX_IOPAD(0x89C, PIN_INPUT | MUX_MODE2)
 		>;
 	};
 	dmtimer_ptp2_pins: dmtimer_ptp2_pins {
 		pinctrl-single,pins = <
-			AM33XX_IOPAD(0x898, PIN_INPUT | MUX_MODE2);
+			AM33XX_IOPAD(0x898, PIN_INPUT | MUX_MODE2)
 		>;
 	};
 	dmtimer_ptp3_pins: dmtimer_ptp3_pins {
 		pinctrl-single,pins = <
-			AM33XX_IOPAD(0x894, PIN_INPUT | MUX_MODE2);
+			AM33XX_IOPAD(0x894, PIN_INPUT | MUX_MODE2)
 		>;
 	};
 
@@ -69,6 +69,10 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&dmtimer_ptp3_pins>;
 	};
+};
+
+&mac {
+	cpts-ext-ts-inputs = <4>;
 };
 
 &cpu0_opp_table {

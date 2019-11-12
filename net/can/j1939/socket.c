@@ -40,6 +40,7 @@ struct j1939_sock {
 #define J1939_SOCK_CONNECTED BIT(1)
 #define J1939_SOCK_PROMISC BIT(2)
 #define J1939_SOCK_RECV_OWN BIT(3)
+#define J1939_SOCK_BAM_DELAY BIT(4)
 
 	struct j1939_addr addr;
 	struct j1939_filter *filters;
@@ -480,6 +481,8 @@ static int j1939sk_setsockopt(struct socket *sock, int level, int optname,
 		jsk->sk.sk_priority = j1939_to_sk_priority(tmp);
 		release_sock(&jsk->sk);
 		return 0;
+	case SO_J1939_BAM_DELAY_DISABLE:
+		return j1939sk_setsockopt_flag(jsk, optval, optlen, J1939_SOCK_BAM_DELAY);
 	default:
 		return -ENOPROTOOPT;
 	}
@@ -513,6 +516,9 @@ static int j1939sk_getsockopt(struct socket *sock, int level, int optname,
 		break;
 	case SO_J1939_SEND_PRIO:
 		tmp = j1939_prio(jsk->sk.sk_priority);
+		break;
+	case SO_J1939_BAM_DELAY_DISABLE:
+		tmp = (jsk->state & J1939_SOCK_BAM_DELAY) ? 1 : 0;
 		break;
 	default:
 		ret = -ENOPROTOOPT;
@@ -654,6 +660,7 @@ static int j1939sk_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 	skcb->addr = jsk->addr;
 	skcb->priority = j1939_prio(sk->sk_priority);
 	skcb->msg_flags = msg->msg_flags;
+	skcb->tpflags = (jsk->state & J1939_SOCK_BAM_DELAY) ? BAM_NODELAY : 0;
 
 	if (msg->msg_name) {
 		struct sockaddr_can *addr = msg->msg_name;

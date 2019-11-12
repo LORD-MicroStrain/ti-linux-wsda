@@ -204,7 +204,11 @@ struct j1939_sk_buff_cb {
 	int src_flags;
 	int dst_flags;
 
+#define BAM_NODELAY 1
 #define ECU_LOCAL 1
+
+	/* Flags for modifying the transport protocol */
+	int tpflags;
 
 	/* for tx, MSG_SYN will be used to sync on sockets */
 	int msg_flags;

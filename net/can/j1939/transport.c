@@ -953,7 +953,12 @@ static int j1939tp_txnext(struct session *session)
 		session->last_txcmd = dat[0];
 		/* must lock? */
 		if (tp_cmd_bam == dat[0])
-			j1939tp_schedule_txtimer(session, 50);
+		{
+			if(session->cb->tpflags & BAM_NODELAY)
+				j1939tp_schedule_txtimer(session, 1);
+			else
+				j1939tp_schedule_txtimer(session, 50);
+		}
 		j1939tp_set_rxtimeout(session, 1250);
 		break;
 	case tp_cmd_rts:
@@ -1063,8 +1068,9 @@ static int j1939tp_txnext(struct session *session)
 			session->last_txcmd = 0xff;
 			++pkt_done;
 			++session->pkt.tx;
-			pdelay = j1939cb_is_broadcast(session->cb) ?  50 :
-				packet_delay;
+			pdelay = j1939cb_is_broadcast(session->cb) &&
+				!(session->cb->tpflags & BAM_NODELAY) ?
+				50 : packet_delay;
 			if ((session->pkt.tx < session->pkt.total) && pdelay) {
 				j1939tp_schedule_txtimer(session, pdelay);
 				break;

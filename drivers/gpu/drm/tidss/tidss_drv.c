@@ -242,6 +242,14 @@ static int tidss_probe(struct platform_device *pdev)
 
 	drm_kms_helper_poll_init(ddev);
 
+	if (tidss->dispc_ops->has_writeback(tidss->dispc)) {
+		ret = tidss_wb_init(ddev);
+		if (ret)
+			dev_warn(dev, "failed to initialize writeback\n");
+		else
+			tidss->wb_initialized = true;
+	}
+
 	ret = drm_dev_register(ddev, 0);
 	if (ret) {
 		dev_err(dev, "failed to register DRM device\n");
@@ -255,6 +263,9 @@ static int tidss_probe(struct platform_device *pdev)
 	return 0;
 
 err_poll_fini:
+	if (tidss->wb_initialized)
+		tidss_wb_cleanup(ddev);
+
 	drm_kms_helper_poll_fini(ddev);
 
 	drm_atomic_helper_shutdown(ddev);
@@ -262,7 +273,7 @@ err_poll_fini:
 	drm_irq_uninstall(ddev);
 
 err_modeset_cleanup:
-	drm_mode_config_cleanup(ddev);
+	tidss_modeset_cleanup(tidss);
 
 err_runtime_suspend:
 #ifndef CONFIG_PM
@@ -294,13 +305,16 @@ static int tidss_remove(struct platform_device *pdev)
 
 	drm_dev_unregister(ddev);
 
+	if (tidss->wb_initialized)
+		tidss_wb_cleanup(ddev);
+
 	drm_kms_helper_poll_fini(ddev);
 
 	drm_atomic_helper_shutdown(ddev);
 
 	drm_irq_uninstall(ddev);
 
-	drm_mode_config_cleanup(ddev);
+	tidss_modeset_cleanup(tidss);
 
 #ifndef CONFIG_PM
 	/* If we don't have PM, we need to call suspend manually */

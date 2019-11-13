@@ -1,0 +1,283 @@
+/*
+ * Copyright (C) 2019 Parker Hannifin - https://www.parker.com/
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
+/dts-v1/;
+
+#include "am33xx.dtsi"
+#include "am335x-bone-common.dtsi"
+#include "am335x-boneblack-common.dtsi"
+
+/ {
+	model = "MicroStrain WSDA-2000";
+	compatible = "ti,am335x-wsda-2000", "ti,am33xx";
+};
+
+/ {
+    wsda-gpio {
+        pinctrl-names = "default";
+        pinctrl-0 = <&wsda_gpio_pins>;
+        compatible = "gpio-leds";
+
+        webred { 
+            label = "wsda-web:red:usr0"; 
+            gpios = <&gpio2 17 GPIO_ACTIVE_HIGH>; 
+            default-state = "on"; 
+        }; 
+    
+        webblue { 
+            label = "wsda-web:blue:usr0"; 
+            gpios = <&gpio2 12 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        }; 
+    
+        webgreen { 
+            label = "wsda-web:green:usr0"; 
+            gpios = <&gpio2 16 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        }; 
+    
+        gatered { 
+            label = "wsda-gate:red:usr0"; 
+            gpios = <&gpio2 13 GPIO_ACTIVE_HIGH>; 
+            default-state = "on"; 
+        }; 
+    
+        gateblue { 
+            label = "wsda-gate:blue:usr0"; 
+            gpios = <&gpio2 7 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        }; 
+    
+        gategreen { 
+            label = "wsda-gate:green:usr0"; 
+            gpios = <&gpio2 6 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        }; 
+    
+        actred { 
+            label = "wsda-act:red:usr0"; 
+            gpios = <&gpio2 23 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        }; 
+    
+        actblue { 
+            label = "wsda-act:blue:usr0"; 
+            gpios = <&gpio2 22 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        }; 
+    
+        actgreen { 
+            label = "wsda-act:green:usr0"; 
+            gpios = <&gpio2 25 GPIO_ACTIVE_HIGH>; 
+            default-state = "off"; 
+        };
+
+        periphpower { 
+            label = "wsda-periph-power"; 
+            gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>; 
+            default-state = "on"; 
+        }; 
+    
+        ppsswitch { 
+            label = "wsda-pps-switch"; 
+            gpios = <&gpio0 26 GPIO_ACTIVE_LOW>; 
+            default-state = "on"; 
+        }; 
+    };
+
+	dmtimer_ptp0: dmtimer_ptp0 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer4>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp0_pins>;
+	};
+
+	dmtimer_ptp1: dmtimer_ptp1 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer5>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp1_pins>;
+	};
+
+	dmtimer_ptp2: dmtimer_ptp2 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer6>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp2_pins>;
+	};
+
+	dmtimer_ptp3: dmtimer_ptp3 {
+		compatible = "dmtimer-ptp";
+		timer = <&timer7>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dmtimer_ptp3_pins>;
+	};
+};
+
+&am335x_pinmux {
+    wsda_gpio_pins: pinmux_wsdagpio_pins { 
+        pinctrl-single,pins = < 
+            /* gate red, blue, green */ 
+            AM33XX_IOPAD(0x8bc, PIN_OUTPUT | MUX_MODE7) /* P8.40 lcd_data7.gpio2_13 */ 
+            AM33XX_IOPAD(0x8a4, PIN_OUTPUT | MUX_MODE7) /* P8.46 lcd_data1.gpio2_7 */ 
+            AM33XX_IOPAD(0x8a0, PIN_OUTPUT | MUX_MODE7) /* P8.45 lcd_data1.gpio2_6 */ 
+        
+            /* WEB Red, Blue, Green */ 
+            AM33XX_IOPAD(0x8cc, PIN_OUTPUT | MUX_MODE7) /* P8.34 lcd_data11.gpio2_17 */ 
+            AM33XX_IOPAD(0x8b8, PIN_OUTPUT | MUX_MODE7) /* P8.39 lcd_data6.gpio2_12 */ 
+            AM33XX_IOPAD(0x8c8, PIN_OUTPUT | MUX_MODE7) /* P8.36 lcd_data10.gpio2_16 */ 
+        
+            /* Activity Red, Blue, Green */ 
+            AM33XX_IOPAD(0x8e4, PIN_OUTPUT | MUX_MODE7) /* P8.29 (Red) lcd_hsync.gpio2_23 */ 
+            AM33XX_IOPAD(0x8e0, PIN_OUTPUT | MUX_MODE7) /* P8.27 (Blue) lcd_vsync.gpio2_22 */ 
+            AM33XX_IOPAD(0x8ec, PIN_OUTPUT | MUX_MODE7) /* P8.30 (Green) lcd_ac_bias_en.gpio2_25 */ 
+        
+            /* Input gpio */ 
+            AM33XX_IOPAD(0x834, PIN_INPUT | MUX_MODE7) /* P8.11 gpio1_13 */ 
+            AM33XX_IOPAD(0x830, PIN_INPUT | MUX_MODE7) /* P8.12 gpio1_12 */ 
+            AM33XX_IOPAD(0x83c, PIN_INPUT | MUX_MODE7) /* P8.15 gpio1_15 */ 
+            AM33XX_IOPAD(0x838, PIN_INPUT | MUX_MODE7) /* P8.16 gpio1_14 */ 
+            AM33XX_IOPAD(0x848, PIN_INPUT | MUX_MODE7) /* P9.14 ehrpwm1a.gpio1_18 */ 
+            AM33XX_IOPAD(0x84c, PIN_INPUT | MUX_MODE7) /* P9.16 ehrpwm1b.gpio1_19 */ 
+        
+            /* Botton board power */ 
+            AM33XX_IOPAD(0x82c, PIN_OUTPUT | MUX_MODE7) /* P8.17 gpio0_27 */ 
+        
+            /* PPS control */ 
+            AM33XX_IOPAD(0x828, PIN_OUTPUT | MUX_MODE7) /* P8.14 gpio0_26 */ 
+        >; 
+    };
+ 
+    uart2_pins: pinmux_uart2_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x950, PIN_INPUT_PULLUP | MUX_MODE1)   /* spi0_sck.uart2_rxd */ 
+            AM33XX_IOPAD(0x954, PIN_OUTPUT_PULLDOWN | MUX_MODE1)    /* spi0_d0.uart2_txd */ 
+        >; 
+    };
+ 
+    uart4_pins: pinmux_uart4_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x870, PIN_INPUT_PULLUP | MUX_MODE6)   /* gpmc_wait0.uart4_rxd */ 
+            AM33XX_IOPAD(0x874, PIN_OUTPUT_PULLDOWN | MUX_MODE6)    /* gpmc_wpn.uart4_txd */ 
+            AM33XX_IOPAD(0x8d4, PIN_OUTPUT | MUX_MODE6) /* P8.33 uart4_rtsn */ 
+            AM33XX_IOPAD(0x8d0, PIN_INPUT | MUX_MODE6)  /* P8.35 uart4_ctsn */ 
+        >; 
+    };
+ 
+    uart5_pins: pinmux_uart5_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x8c4, PIN_INPUT | MUX_MODE4)  /* lcd_data9.uart5_rxd */ 
+            AM33XX_IOPAD(0x8c0, PIN_OUTPUT | MUX_MODE4) /* lcd_data8.uart5_txd */
+        >; 
+    };
+ 
+    dcan0_pins: pinmux_dcan0_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x97c, PIN_INPUT_PULLUP | MUX_MODE2)   /* uart1_rtsn.dcan0_rx */ 
+            AM33XX_IOPAD(0x978, PIN_OUTPUT_PULLDOWN | MUX_MODE2)    /* uart1_ctsn.dcan0_tx */ 
+        >; 
+    };
+
+    dcan1_pins: pinmux_dcan1_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x980, PIN_OUTPUT_PULLDOWN | MUX_MODE2)    /* uart1_rxd.dcan1_tx */ 
+            AM33XX_IOPAD(0x984, PIN_INPUT_PULLUP | MUX_MODE2)   /* uart1_txd.dcan1_rx */ 
+        >; 
+    };
+
+	dmtimer_ptp0_pins: dmtimer_ptp0_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x890, PIN_INPUT | MUX_MODE2)
+		>;
+	};
+
+	dmtimer_ptp1_pins: dmtimer_ptp1_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x89C, PIN_INPUT | MUX_MODE2)
+		>;
+	};
+
+	dmtimer_ptp2_pins: dmtimer_ptp2_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x898, PIN_INPUT | MUX_MODE2)
+		>;
+	};
+
+	dmtimer_ptp3_pins: dmtimer_ptp3_pins {
+		pinctrl-single,pins = <
+			AM33XX_IOPAD(0x894, PIN_INPUT | MUX_MODE2)
+		>;
+	};
+};
+
+&uart2 { 
+    pinctrl-names = "default"; 
+    pinctrl-0 = <&uart2_pins>; 
+    status = "okay"; 
+}; 
+ 
+&uart4 { 
+    pinctrl-names = "default"; 
+    pinctrl-0 = <&uart4_pins>; 
+    status = "okay"; 
+}; 
+ 
+&uart5 { 
+    pinctrl-names = "default"; 
+    pinctrl-0 = <&uart5_pins>; 
+    status = "okay"; 
+}; 
+ 
+&tscadc { 
+    status = "okay"; 
+}; 
+ 
+&am335x_adc { 
+    ti,adc-channels = <4>; 
+}; 
+ 
+&dcan0 { 
+    pinctrl-names = "default"; 
+    pinctrl-0 = <&dcan0_pins>; 
+    status = "okay"; 
+};
+
+&dcan1 { 
+    pinctrl-names = "default"; 
+    pinctrl-0 = <&dcan1_pins>; 
+    status = "okay"; 
+};
+
+/**
+ * Enable extts pins for cpts
+ */
+&mac {
+	cpts-ext-ts-inputs = <4>;
+};
+
+&lcdc {
+    status = "disabled";
+}
+
+&i2c2 {
+    status = "disabled";
+}
+
+&tda19988 {
+    status = "disabled";
+}
+
+&cpu0_opp_table {
+	/*
+	 * All PG 2.0 silicon may not support 1GHz but some of the early
+	 * BeagleBone Blacks have PG 2.0 silicon which is guaranteed
+	 * to support 1GHz OPP so enable it for PG 2.0 on this board.
+	 */
+	oppnitro-1000000000 {
+		opp-supported-hw = <0x06 0x0100>;
+	};
+};

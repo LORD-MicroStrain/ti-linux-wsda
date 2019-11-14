@@ -118,7 +118,7 @@
 	};
 };
 
-&am335x_pinmux {
+&am33xx_pinmux {
     wsda_gpio_pins: pinmux_wsdagpio_pins { 
         pinctrl-single,pins = < 
             /* gate red, blue, green */ 
@@ -261,15 +261,15 @@
 
 &lcdc {
     status = "disabled";
-}
+};
 
 &i2c2 {
     status = "disabled";
-}
+};
 
 &tda19988 {
     status = "disabled";
-}
+};
 
 &cpu0_opp_table {
 	/*

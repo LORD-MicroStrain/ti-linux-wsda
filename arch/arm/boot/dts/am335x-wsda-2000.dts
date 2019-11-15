@@ -89,7 +89,29 @@
         }; 
     };
 
-	dmtimer_ptp0: dmtimer_ptp0 {
+    pps_input { 
+        compatible = "pps-gpio"; 
+        status = "okay"; 
+    
+        pinctrl-names = "default"; 
+        pinctrl-0 = <&pps_input_pins>; 
+    
+        gpios = <&gpio2 2 GPIO_ACTIVE_HIGH>; 
+        assert-rising-edge; 
+    }; 
+    
+    pps_output { 
+        compatible = "pps-gpio"; 
+        status = "okay"; 
+    
+        pinctrl-names = "default"; 
+        pinctrl-0 = <&pps_output_pins>; 
+    
+        gpios = <&gpio2 5 GPIO_ACTIVE_HIGH>; 
+        assert-falling-edge; 
+    }; 
+
+	/*dmtimer_ptp0: dmtimer_ptp0 {
 		compatible = "dmtimer-ptp";
 		timer = <&timer4>;
 		pinctrl-names = "default";
@@ -115,7 +137,7 @@
 		timer = <&timer7>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&dmtimer_ptp3_pins>;
-	};
+	};*/
 };
 
 &am33xx_pinmux {
@@ -189,7 +211,19 @@
         >; 
     };
 
-	dmtimer_ptp0_pins: dmtimer_ptp0_pins {
+    pps_input_pins: pps_input_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x890, PIN_INPUT | MUX_MODE7)  /* P8.7 timer4.gpio2_2 */ 
+        >; 
+    }; 
+    
+    pps_output_pins: pps_output_pins { 
+        pinctrl-single,pins = < 
+            AM33XX_IOPAD(0x89c, PIN_INPUT | MUX_MODE7)  /* P8.9 timer5.gpio2_5 */ 
+        >; 
+    }; 
+
+	/*dmtimer_ptp0_pins: dmtimer_ptp0_pins {
 		pinctrl-single,pins = <
 			AM33XX_IOPAD(0x890, PIN_INPUT | MUX_MODE2)
 		>;
@@ -211,7 +245,7 @@
 		pinctrl-single,pins = <
 			AM33XX_IOPAD(0x894, PIN_INPUT | MUX_MODE2)
 		>;
-	};
+	};*/
 };
 
 &uart2 { 
